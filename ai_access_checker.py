@@ -245,7 +245,7 @@ def generate_gauge_svg(score: int, label: str = "", size: int = 200):
 # ─── UI COMPONENT HELPERS ────────────────────────────────────────────────────
 
 def brand_score_bar(score, benchmark=None, height=8):
-    """Progress bar with Pattern brand gradient and benchmark marker."""
+    """Progress bar with Pattern brand gradient and benchmark text below."""
     if score >= 75:
         bar_color = BRAND["teal"]
     elif score >= 50:
@@ -255,26 +255,15 @@ def brand_score_bar(score, benchmark=None, height=8):
     else:
         bar_color = BRAND["danger"]
 
-    benchmark_html = ""
+    benchmark_text = ""
     if benchmark is not None:
-        benchmark_html = f'''
-        <div style="position:absolute;left:{benchmark}%;top:-4px;bottom:-4px;width:2px;
-                     background:{BRAND['white']};border-radius:1px;opacity:0.7;"
-             title="Benchmark: {benchmark}%">
-        </div>
-        <div style="position:absolute;left:{benchmark}%;top:-18px;transform:translateX(-50%);
-                     font-size:9px;color:{BRAND['text_secondary']};white-space:nowrap;">
-            Avg: {benchmark}%
-        </div>
-        '''
+        benchmark_text = f'<div style="font-size:11px;color:{BRAND["text_secondary"]};margin-top:4px;">Industry Avg: {benchmark}%</div>'
 
     return f'''
-    <div style="position:relative;background:{BRAND['border']};border-radius:{height}px;
-                height:{height}px;margin:20px 0 8px 0;overflow:visible;">
-        <div style="width:{score}%;background:linear-gradient(90deg, {BRAND['purple']}, {bar_color});
-                     height:100%;border-radius:{height}px;transition:width 0.6s ease;"></div>
-        {benchmark_html}
+    <div style="background:{BRAND['border']};border-radius:{height}px;height:{height}px;margin:8px 0 4px 0;">
+        <div style="width:{score}%;background:linear-gradient(90deg, {BRAND['purple']}, {bar_color});height:100%;border-radius:{height}px;"></div>
     </div>
+    {benchmark_text}
     '''
 
 
@@ -305,25 +294,15 @@ def brand_status(text, status="success"):
 
 
 def pillar_header(number, icon, title, score, benchmark=None):
-    """Pillar section header with score and benchmark bar."""
-    bench_text = f"&nbsp;&nbsp;·&nbsp;&nbsp;Industry Avg: {benchmark}%" if benchmark is not None else ""
-    html = f'''
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px;">
-        <div style="background:linear-gradient(135deg, {BRAND['purple']}, {BRAND['primary']});
-                     width:36px;height:36px;border-radius:10px;display:flex;align-items:center;
-                     justify-content:center;font-size:18px;flex-shrink:0;">{icon}</div>
-        <div>
-            <div style="font-size:11px;color:{BRAND['text_secondary']};text-transform:uppercase;letter-spacing:1.5px;">
-                Pillar {number}
-            </div>
-            <div style="font-size:20px;font-weight:700;color:{BRAND['white']};">{title}</div>
-        </div>
-        <div style="margin-left:auto;text-align:right;">
-            <div style="font-size:28px;font-weight:800;color:{BRAND['white']};">{score}<span style="font-size:16px;opacity:0.5;">/100</span></div>
-            <div style="font-size:11px;color:{BRAND['text_secondary']};">{bench_text}</div>
-        </div>
-    </div>
-    '''
+    """Pillar section header with score."""
+    bench_text = f" · Industry Avg: {benchmark}%" if benchmark is not None else ""
+    html = f'''<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+<div style="display:flex;align-items:center;gap:12px;">
+<div style="background:linear-gradient(135deg, {BRAND['purple']}, {BRAND['primary']});width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;">{icon}</div>
+<div><div style="font-size:11px;color:{BRAND['text_secondary']};text-transform:uppercase;letter-spacing:1.5px;">Pillar {number}</div><div style="font-size:20px;font-weight:700;color:{BRAND['white']};">{title}</div></div>
+</div>
+<div style="text-align:right;"><div style="font-size:28px;font-weight:800;color:{BRAND['white']};">{score}<span style="font-size:16px;opacity:0.5;">/100</span></div><div style="font-size:11px;color:{BRAND['text_secondary']};">{bench_text}</div></div>
+</div>'''
     return html
 
 
@@ -1016,15 +995,8 @@ st.markdown(f"""
 
 
 # ── HEADER ────────────────────────────────────────────────────────────────────
-st.markdown(f'''
-<div class="pattern-header">
-    {PATTERN_LOGO_SVG}
-    <h1>AI Accessibility Checker</h1>
-</div>
-<div class="pattern-subtitle">
-    Full LLM Access Audit &nbsp;·&nbsp; JavaScript Rendering &nbsp;·&nbsp; LLM.txt &nbsp;·&nbsp; Robots.txt &nbsp;·&nbsp; Schema &nbsp;·&nbsp; Live Bot Crawl
-</div>
-''', unsafe_allow_html=True)
+st.markdown(f'<div style="text-align:center;padding:1rem 0 0.3rem 0;"><h1 style="font-size:1.6rem;font-weight:700;margin:0;color:{BRAND["white"]};">⚡ AI Accessibility Checker</h1></div>', unsafe_allow_html=True)
+st.markdown(f'<div style="text-align:center;color:{BRAND["text_secondary"]};font-size:0.95rem;margin-bottom:1.5rem;">Full LLM Access Audit · JavaScript Rendering · LLM.txt · Robots.txt · Schema · Live Bot Crawl</div>', unsafe_allow_html=True)
 
 
 # ── INPUT ─────────────────────────────────────────────────────────────────────
@@ -1103,23 +1075,11 @@ if run_audit and url_input:
 
     with col_gauge:
         gauge_svg = generate_gauge_svg(overall, label="AI Readiness Score", size=220)
-        st.markdown(f'''
-        <div style="display:flex;flex-direction:column;align-items:center;padding:1rem 0;">
-            <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;color:{BRAND['text_secondary']};margin-bottom:8px;">
-                LLM Access Audit
-            </div>
-            {gauge_svg}
-            <div style="font-size:13px;color:{BRAND['text_secondary']};margin-top:8px;">
-                {parsed.netloc}
-            </div>
-        </div>
-        ''', unsafe_allow_html=True)
+        st.markdown(f'''<div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;color:{BRAND['text_secondary']};text-align:center;margin-bottom:8px;">LLM Access Audit</div>''', unsafe_allow_html=True)
+        st.markdown(f'<div style="text-align:center;">{gauge_svg}</div>', unsafe_allow_html=True)
+        st.markdown(f'''<div style="font-size:13px;color:{BRAND['text_secondary']};text-align:center;margin-top:4px;">{parsed.netloc}</div>''', unsafe_allow_html=True)
 
     with col_pillars:
-        st.markdown(f'''
-        <div style="display:flex;gap:10px;flex-wrap:wrap;padding-top:1.5rem;">
-        ''', unsafe_allow_html=True)
-
         pillar_items = [
             ("⚡", "JS Rendering", js_score, BENCHMARKS["js_rendering"]),
             ("📖", "LLM.txt", llm_score, BENCHMARKS["llm_txt"]),
@@ -1145,24 +1105,12 @@ if run_audit and url_input:
         with sub_cols[0]:
             allowed_bots = sum(1 for r in bot_crawl_results.values() if r.get("is_allowed")) if bot_crawl_results else "—"
             total_bots = len(bot_crawl_results) if bot_crawl_results else "—"
-            st.markdown(f'''
-            <div style="background:{BRAND['bg_card']};border:1px solid {BRAND['border']};border-radius:10px;padding:14px 18px;">
-                <div style="font-size:11px;color:{BRAND['text_secondary']};text-transform:uppercase;letter-spacing:1px;">Bot Access</div>
-                <div style="font-size:22px;font-weight:700;color:{BRAND['white']};">{allowed_bots}<span style="font-size:14px;opacity:0.4;">/{total_bots}</span></div>
-                <div style="font-size:11px;color:{BRAND['text_secondary']};">Bots allowed</div>
-            </div>
-            ''', unsafe_allow_html=True)
+            st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:10px;padding:14px 18px;"><div style="font-size:11px;color:{BRAND["text_secondary"]};text-transform:uppercase;letter-spacing:1px;">Bot Access</div><div style="font-size:22px;font-weight:700;color:{BRAND["white"]};">{allowed_bots}<span style="font-size:14px;opacity:0.4;">/{total_bots}</span></div><div style="font-size:11px;color:{BRAND["text_secondary"]};">Bots allowed</div></div>', unsafe_allow_html=True)
         with sub_cols[1]:
             exposed_count = sum(1 for p, r in robots_result.get("sensitive_paths", {}).items() if r["accessible_per_robots"])
             total_sensitive = len(robots_result.get("sensitive_paths", {}))
             sec_color = BRAND["teal"] if exposed_count < 5 else BRAND["warning"] if exposed_count < 15 else BRAND["danger"]
-            st.markdown(f'''
-            <div style="background:{BRAND['bg_card']};border:1px solid {BRAND['border']};border-radius:10px;padding:14px 18px;">
-                <div style="font-size:11px;color:{BRAND['text_secondary']};text-transform:uppercase;letter-spacing:1px;">Security Scan</div>
-                <div style="font-size:22px;font-weight:700;color:{sec_color};">{exposed_count}<span style="font-size:14px;opacity:0.4;">/{total_sensitive}</span></div>
-                <div style="font-size:11px;color:{BRAND['text_secondary']};">Paths exposed</div>
-            </div>
-            ''', unsafe_allow_html=True)
+            st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:10px;padding:14px 18px;"><div style="font-size:11px;color:{BRAND["text_secondary"]};text-transform:uppercase;letter-spacing:1px;">Security Scan</div><div style="font-size:22px;font-weight:700;color:{sec_color};">{exposed_count}<span style="font-size:14px;opacity:0.4;">/{total_sensitive}</span></div><div style="font-size:11px;color:{BRAND["text_secondary"]};">Paths exposed</div></div>', unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════════════
     # PILLAR 1: JS RENDERING
@@ -1252,20 +1200,11 @@ if run_audit and url_input:
                 with st.expander(f"🏢  {company} ({len(company_bots)} agents)"):
                     for bot_name, info in company_bots.items():
                         if info["robots_allowed"] is True:
-                            st.markdown(f'''<div class="bot-row">
-                                <span class="bot-name">{bot_name}</span>
-                                <span class="bot-status-allowed">✓ Allowed</span>
-                            </div>''', unsafe_allow_html=True)
+                            st.markdown(brand_status(f"**{bot_name}**: Allowed", "success"), unsafe_allow_html=True)
                         elif info["robots_allowed"] is False:
-                            st.markdown(f'''<div class="bot-row">
-                                <span class="bot-name">{bot_name}</span>
-                                <span class="bot-status-blocked">✗ Blocked</span>
-                            </div>''', unsafe_allow_html=True)
+                            st.markdown(brand_status(f"**{bot_name}**: Blocked", "danger"), unsafe_allow_html=True)
                         else:
-                            st.markdown(f'''<div class="bot-row">
-                                <span class="bot-name">{bot_name}</span>
-                                <span style="color:{BRAND['warning']};font-weight:600;">? Unknown</span>
-                            </div>''', unsafe_allow_html=True)
+                            st.markdown(brand_status(f"**{bot_name}**: Unknown", "warning"), unsafe_allow_html=True)
 
         # Sitemaps
         if robots_result["sitemaps"]:
@@ -1353,25 +1292,11 @@ if run_audit and url_input:
     # ══════════════════════════════════════════════════════════════════════
     if bot_crawl_results:
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
-        st.markdown(f'''
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-            <div style="background:linear-gradient(135deg, {BRAND['purple']}, {BRAND['primary']});
-                         width:36px;height:36px;border-radius:10px;display:flex;align-items:center;
-                         justify-content:center;font-size:18px;">🕷️</div>
-            <div>
-                <div style="font-size:11px;color:{BRAND['text_secondary']};text-transform:uppercase;letter-spacing:1.5px;">Live Test</div>
-                <div style="font-size:20px;font-weight:700;color:{BRAND['white']};">Bot Crawl Results</div>
-            </div>
-        </div>
-        ''', unsafe_allow_html=True)
+        st.markdown("### 🕷️ Live Bot Crawl Results")
 
         allowed_count = sum(1 for r in bot_crawl_results.values() if r["is_allowed"])
         total_bots = len(bot_crawl_results)
-        st.markdown(f'''<div style="font-size:14px;color:{BRAND['text_secondary']};margin-bottom:12px;">
-            <span style="color:{BRAND['teal']};font-weight:700;">{allowed_count}</span> allowed &nbsp;·&nbsp;
-            <span style="color:{BRAND['danger']};font-weight:700;">{total_bots - allowed_count}</span> blocked &nbsp;·&nbsp;
-            {total_bots} total agents tested
-        </div>''', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-size:14px;color:{BRAND["text_secondary"]};margin-bottom:12px;"><span style="color:{BRAND["teal"]};font-weight:700;">{allowed_count}</span> allowed · <span style="color:{BRAND["danger"]};font-weight:700;">{total_bots - allowed_count}</span> blocked · {total_bots} total agents tested</div>', unsafe_allow_html=True)
 
         companies_seen = list(dict.fromkeys(r["company"] for r in bot_crawl_results.values()))
         for company in companies_seen:
@@ -1382,26 +1307,16 @@ if run_audit and url_input:
                     if r["error"]:
                         st.markdown(brand_status(f"**{bot_name}**: Error — {r['error']}", "danger"), unsafe_allow_html=True)
                     else:
-                        status = "success" if r["is_allowed"] else "danger"
                         status_text = "Allowed" if r["is_allowed"] else "BLOCKED"
-                        st.markdown(f'''<div class="bot-row">
-                            <span class="bot-name">{bot_name}</span>
-                            <span class="bot-status-{'allowed' if r['is_allowed'] else 'blocked'}">{status_text}</span>
-                            <span class="bot-detail">HTTP {r['status_code']} · Robots: {'✓' if r['robots_allowed'] else '✗'} · Meta: {r['robots_meta']} · {r['content_length']:,} chars · {r['load_time']}s</span>
-                        </div>''', unsafe_allow_html=True)
+                        s = "success" if r["is_allowed"] else "danger"
+                        st.markdown(brand_status(f"**{bot_name}**: {status_text}", s), unsafe_allow_html=True)
+                        st.caption(f"HTTP {r['status_code']} · Robots: {'✓' if r['robots_allowed'] else '✗'} · Meta: {r['robots_meta']} · {r['content_length']:,} chars · {r['load_time']}s")
 
     # ══════════════════════════════════════════════════════════════════════
     # SUPPLEMENTARY
     # ══════════════════════════════════════════════════════════════════════
     st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
-    st.markdown(f'''
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-        <div style="background:{BRAND['bg_surface']};border:1px solid {BRAND['border']};
-                     width:36px;height:36px;border-radius:10px;display:flex;align-items:center;
-                     justify-content:center;font-size:18px;">🏷️</div>
-        <div style="font-size:18px;font-weight:600;color:{BRAND['white']};">Supplementary — Meta Tags, Headers & AI Policy Files</div>
-    </div>
-    ''', unsafe_allow_html=True)
+    st.markdown("### 🏷️ Supplementary — Meta Tags, Headers & AI Policy Files")
 
     col_left, col_right = st.columns(2)
     with col_left:
@@ -1435,14 +1350,7 @@ if run_audit and url_input:
     # RECOMMENDATIONS
     # ══════════════════════════════════════════════════════════════════════
     st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
-    st.markdown(f'''
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
-        <div style="background:linear-gradient(135deg, {BRAND['warning']}, {BRAND['danger']});
-                     width:36px;height:36px;border-radius:10px;display:flex;align-items:center;
-                     justify-content:center;font-size:18px;">💡</div>
-        <div style="font-size:20px;font-weight:700;color:{BRAND['white']};">Priority Recommendations</div>
-    </div>
-    ''', unsafe_allow_html=True)
+    st.markdown("### 💡 Priority Recommendations")
 
     recs = []
 
@@ -1483,28 +1391,18 @@ if run_audit and url_input:
     if not recs:
         st.markdown(brand_status("Excellent! Your site scores well across all four pillars.", "success"), unsafe_allow_html=True)
     else:
+        seen = set()
         for status, pillar, text in recs:
+            key = f"{pillar}:{text}"
+            if key in seen:
+                continue
+            seen.add(key)
             color = BRAND["danger"] if status == "danger" else BRAND["warning"]
-            st.markdown(f'''
-            <div style="background:{BRAND['bg_card']};border-left:3px solid {color};
-                        border-radius:0 10px 10px 0;padding:14px 18px;margin:6px 0;">
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-                    {brand_pill(pillar, color)}
-                </div>
-                <div style="color:{BRAND['white']};font-size:14px;">{text}</div>
-            </div>
-            ''', unsafe_allow_html=True)
+            st.markdown(f'<div style="background:{BRAND["bg_card"]};border-left:3px solid {color};border-radius:0 10px 10px 0;padding:14px 18px;margin:6px 0;"><div style="margin-bottom:6px;">{brand_pill(pillar, color)}</div><div style="color:{BRAND["white"]};font-size:14px;">{text}</div></div>', unsafe_allow_html=True)
 
     # ── FOOTER ────────────────────────────────────────────────────────────
     st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
-    st.markdown(f'''
-    <div style="display:flex;align-items:center;justify-content:center;gap:10px;padding:1rem 0;">
-        {PATTERN_LOGO_SVG}
-        <span style="color:{BRAND['text_secondary']};font-size:12px;">
-            Pattern AI Accessibility Checker — LLM Access Audit · Benchmarks: Pattern Q1 2025 AU DTC Audit
-        </span>
-    </div>
-    ''', unsafe_allow_html=True)
+    st.markdown(f'<div style="text-align:center;padding:1rem 0;"><span style="color:{BRAND["text_secondary"]};font-size:12px;">Pattern AI Accessibility Checker — LLM Access Audit · Benchmarks: Pattern Q1 2025 AU DTC Audit</span></div>', unsafe_allow_html=True)
 
 elif run_audit and not url_input:
     st.warning("Please enter a URL to audit.")
