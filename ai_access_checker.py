@@ -66,8 +66,8 @@ PATTERN_LOGO_SVG = '''<svg width="180" height="36" viewBox="0 0 675 135.7" fill=
 # ─── PILLAR EXPLANATIONS ─────────────────────────────────────────────────────
 PILLAR_INFO = {
     "js_rendering": {
-        "what": "We load each page and analyse the raw HTML source (without executing JavaScript). We compare what a simple AI crawler would see versus what needs JavaScript to render. We check for JS frameworks (React, Vue, Angular), empty root containers, missing prices/navigation, and noscript warnings.",
-        "why": "Most AI crawlers (GPTBot, ClaudeBot, PerplexityBot) do not execute JavaScript. If your product prices, descriptions, navigation, or pagination only appear after JavaScript runs, AI agents see an empty or incomplete page. This means your products won't appear in AI-generated answers, and AI may fill gaps with inaccurate third-party data.",
+        "what": "We load each page twice — once as raw HTML (what AI crawlers see) and once with JavaScript fully executed (what a browser sees). We then compare the two side-by-side to show exactly what content AI agents are missing. We check prices, product images, navigation, headings, reviews, text content, and links. An AI agent then analyses the gaps and explains the business impact.",
+        "why": "Most AI crawlers (GPTBot, ClaudeBot, PerplexityBot) do not execute JavaScript. If your product prices, descriptions, navigation, or pagination only appear after JavaScript runs, AI agents see an empty or incomplete page. This means your products won't appear in AI-generated answers, and AI may fill gaps with inaccurate third-party data. The comparison table shows exactly what's hidden.",
     },
     "llm_txt": {
         "what": "We check for the presence and quality of llm.txt files at /llm.txt, /llms.txt, /llms-full.txt, and /.well-known/llm.txt. We evaluate whether the file has a title, description, links to key pages, and clear section structure.",
@@ -151,6 +151,14 @@ SCHEMA_KEY_FIELDS = {
 
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
+
+def get_secret(key, default=""):
+    """Safely get a secret — returns default if secrets not configured."""
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
 
 def normalise_url(url: str) -> str:
     url = url.strip()
@@ -244,10 +252,104 @@ def pillar_explainer(pillar_key):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PILLAR 1: JAVASCRIPT RENDERING (logic unchanged)
+# JS RENDERING API — CASCADING FALLBACK
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def fetch_js_rendered(url: str):
+    """Fetch JS-rendered HTML using cascading API fallback: ScrapingBee → Scrapfly → Browserless.
+    Returns (html_string, provider_used, error_or_none)."""
+
+    # --- Provider 1: ScrapingBee ---
+    api_key = get_secret("SCRAPINGBEE_API_KEY", "")
+    if api_key:
+        try:
+            resp = requests.get(
+                "https://app.scrapingbee.com/api/v1/",
+                params={"api_key": api_key, "url": url, "render_js": "true", "premium_proxy": "false"},
+                timeout=45,
+            )
+            if resp.status_code == 200 and len(resp.text) > 200:
+                return resp.text, "ScrapingBee", None
+        except Exception as e:
+            pass  # fall through to next provider
+
+    # --- Provider 2: Scrapfly ---
+    api_key = get_secret("SCRAPFLY_API_KEY", "")
+    if api_key:
+        try:
+            resp = requests.get(
+                "https://api.scrapfly.io/scrape",
+                params={"key": api_key, "url": url, "render_js": "true", "asp": "false"},
+                timeout=45,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                html = data.get("result", {}).get("content", "")
+                if html and len(html) > 200:
+                    return html, "Scrapfly", None
+        except Exception as e:
+            pass  # fall through to next provider
+
+    # --- Provider 3: Browserless ---
+    api_key = get_secret("BROWSERLESS_API_KEY", "")
+    if api_key:
+        try:
+            resp = requests.post(
+                f"https://chrome.browserless.io/content?token={api_key}",
+                json={"url": url, "waitFor": 3000},
+                timeout=45,
+            )
+            if resp.status_code == 200 and len(resp.text) > 200:
+                return resp.text, "Browserless", None
+        except Exception as e:
+            pass
+
+    # No provider available
+    return None, None, "No JS rendering API key configured. Add SCRAPINGBEE_API_KEY, SCRAPFLY_API_KEY, or BROWSERLESS_API_KEY in Streamlit Secrets."
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HTML vs JS COMPARISON ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def analyse_html_content(html: str):
+    """Extract key content elements from HTML."""
+    soup = BeautifulSoup(html, "html.parser")
+    results = {"title": "", "meta_description": "", "h1_tags": [], "h2_tags": [], "prices": [], "images_with_alt": 0, "images_without_alt": 0, "images_total": 0, "nav_links": 0, "product_elements": 0, "text_content_length": 0, "total_links": 0, "pagination": False, "reviews": 0, "forms": 0}
+    title = soup.find("title")
+    results["title"] = title.get_text(strip=True) if title else ""
+    meta_desc = soup.find("meta", attrs={"name": "description"})
+    results["meta_description"] = meta_desc.get("content", "") if meta_desc else ""
+    results["h1_tags"] = [h.get_text(strip=True) for h in soup.find_all("h1")][:10]
+    results["h2_tags"] = [h.get_text(strip=True) for h in soup.find_all("h2")][:20]
+    text = soup.get_text()
+    price_patterns = re.findall(r'[\$£€]\s?\d+[\.,]?\d*', text)
+    results["prices"] = list(set(price_patterns))[:20]
+    price_elements = soup.find_all(class_=re.compile(r'price|cost|amount', re.I))
+    price_elements += soup.find_all(attrs={"itemprop": "price"})
+    if price_elements and not results["prices"]:
+        for el in price_elements[:10]:
+            txt = el.get_text(strip=True)
+            if txt: results["prices"].append(txt)
+    images = soup.find_all("img")
+    results["images_total"] = len(images)
+    results["images_with_alt"] = sum(1 for img in images if img.get("alt", "").strip())
+    results["images_without_alt"] = sum(1 for img in images if not img.get("alt", "").strip())
+    nav = soup.find_all("nav")
+    results["nav_links"] = sum(len(n.find_all("a")) for n in nav)
+    results["total_links"] = len(soup.find_all("a", href=True))
+    product_indicators = soup.find_all(class_=re.compile(r'product|item|card', re.I))
+    results["product_elements"] = len(product_indicators)
+    pagination = soup.find_all(class_=re.compile(r'pagination|pager|page-nav', re.I))
+    results["pagination"] = len(pagination) > 0 or bool(soup.find("a", string=re.compile(r'^(next|›|»|→)', re.I)))
+    results["text_content_length"] = len(soup.get_text(separator=" ", strip=True))
+    results["reviews"] = len(soup.find_all(class_=re.compile(r'review|testimonial|rating', re.I)))
+    results["forms"] = len(soup.find_all("form"))
+    return results
+
+
 def detect_js_frameworks(html: str):
+    """Detect JS frameworks from raw HTML."""
     soup = BeautifulSoup(html, "html.parser")
     frameworks = []
     if soup.find(id="root") or soup.find(id="__next") or soup.find(id="app"):
@@ -269,68 +371,207 @@ def detect_js_frameworks(html: str):
     return frameworks
 
 
-def analyse_html_content(html: str):
-    soup = BeautifulSoup(html, "html.parser")
-    results = {"title": "", "meta_description": "", "h1_tags": [], "h2_tags": [], "prices": [], "images_with_alt": 0, "images_without_alt": 0, "nav_links": 0, "product_elements": 0, "text_content_length": 0, "total_links": 0, "pagination": False}
-    title = soup.find("title")
-    results["title"] = title.get_text(strip=True) if title else ""
-    meta_desc = soup.find("meta", attrs={"name": "description"})
-    results["meta_description"] = meta_desc.get("content", "") if meta_desc else ""
-    results["h1_tags"] = [h.get_text(strip=True) for h in soup.find_all("h1")][:10]
-    results["h2_tags"] = [h.get_text(strip=True) for h in soup.find_all("h2")][:20]
-    text = soup.get_text()
-    price_patterns = re.findall(r'[\$£€]\s?\d+[\.,]?\d*', text)
-    results["prices"] = list(set(price_patterns))[:20]
-    price_elements = soup.find_all(class_=re.compile(r'price|cost|amount', re.I))
-    price_elements += soup.find_all(attrs={"itemprop": "price"})
-    if price_elements and not results["prices"]:
-        for el in price_elements[:10]:
-            txt = el.get_text(strip=True)
-            if txt: results["prices"].append(txt)
-    images = soup.find_all("img")
-    results["images_with_alt"] = sum(1 for img in images if img.get("alt", "").strip())
-    results["images_without_alt"] = sum(1 for img in images if not img.get("alt", "").strip())
-    nav = soup.find_all("nav")
-    results["nav_links"] = sum(len(n.find_all("a")) for n in nav)
-    results["total_links"] = len(soup.find_all("a", href=True))
-    product_indicators = soup.find_all(class_=re.compile(r'product|item|card', re.I))
-    results["product_elements"] = len(product_indicators)
-    pagination = soup.find_all(class_=re.compile(r'pagination|pager|page-nav', re.I))
-    results["pagination"] = len(pagination) > 0 or bool(soup.find("a", string=re.compile(r'^(next|›|»|→)', re.I)))
-    results["text_content_length"] = len(soup.get_text(separator=" ", strip=True))
-    return results
+def compare_html_vs_js(html_content, js_content):
+    """Compare raw HTML vs JS-rendered content and return structured comparison."""
+    html = analyse_html_content(html_content)
+    js = analyse_html_content(js_content)
 
+    comparison = []
+    metrics = [
+        ("Product Prices", len(html["prices"]), len(js["prices"]), "AI cannot show your pricing"),
+        ("H1 Headings", len(html["h1_tags"]), len(js["h1_tags"]), "AI can't identify page topic"),
+        ("H2 Headings", len(html["h2_tags"]), len(js["h2_tags"]), "AI misses content structure"),
+        ("Navigation Links", html["nav_links"], js["nav_links"], "AI can't discover other pages from here"),
+        ("Total Links", html["total_links"], js["total_links"], "Reduces internal linking for AI crawlers"),
+        ("Images", html["images_total"], js["images_total"], "No visual context for AI"),
+        ("Images with Alt Text", html["images_with_alt"], js["images_with_alt"], "AI can't understand your images"),
+        ("Product Elements", html["product_elements"], js["product_elements"], "AI can't see your products"),
+        ("Text Content (chars)", html["text_content_length"], js["text_content_length"], "AI sees very little about your page"),
+        ("Reviews/Ratings", html["reviews"], js["reviews"], "AI won't surface your social proof"),
+        ("Forms", html["forms"], js["forms"], "Action engines can't interact with your site"),
+    ]
+
+    for name, html_val, js_val, impact in metrics:
+        if js_val > html_val:
+            status = "missing"
+            delta = js_val - html_val
+        elif js_val == html_val:
+            status = "ok"
+            delta = 0
+        else:
+            status = "ok"
+            delta = 0
+        comparison.append({
+            "name": name,
+            "html_val": html_val,
+            "js_val": js_val,
+            "status": status,
+            "delta": delta,
+            "impact": impact if status == "missing" else "",
+        })
+
+    # Title comparison
+    title_match = html["title"] == js["title"]
+    comparison.insert(0, {
+        "name": "Page Title",
+        "html_val": f'"{html["title"][:60]}"' if html["title"] else "Missing",
+        "js_val": f'"{js["title"][:60]}"' if js["title"] else "Missing",
+        "status": "ok" if html["title"] else "missing",
+        "delta": 0,
+        "impact": "AI can't identify this page" if not html["title"] else "",
+    })
+
+    # Calculate overall gap score
+    total_metrics = len([c for c in comparison if isinstance(c["html_val"], int) and isinstance(c["js_val"], int)])
+    missing_metrics = len([c for c in comparison if c["status"] == "missing"])
+    gap_severity = missing_metrics / max(total_metrics, 1)
+
+    return {
+        "comparison": comparison,
+        "html_summary": html,
+        "js_summary": js,
+        "gap_severity": gap_severity,
+        "total_missing": missing_metrics,
+        "provider": None,  # set by caller
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CLAUDE AI ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def ai_analyse_js_gap(url, comparison_result, page_label):
+    """Use Claude API to generate client-friendly analysis of HTML vs JS gaps."""
+    api_key = get_secret("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return None
+
+    # Build the comparison summary for Claude
+    comp_lines = []
+    for c in comparison_result["comparison"]:
+        if c["status"] == "missing":
+            comp_lines.append(f"- {c['name']}: HTML has {c['html_val']}, JS-rendered has {c['js_val']} (MISSING {c['delta']})")
+        else:
+            comp_lines.append(f"- {c['name']}: HTML has {c['html_val']}, JS-rendered has {c['js_val']} (OK)")
+
+    html_s = comparison_result["html_summary"]
+    js_s = comparison_result["js_summary"]
+
+    prompt = f"""You are an AI SEO expert analysing a website's AI-readiness. A page was loaded twice: once as raw HTML (what AI crawlers like GPTBot and ClaudeBot see) and once with JavaScript fully rendered (what a browser sees).
+
+URL: {url}
+Page type: {page_label}
+
+COMPARISON DATA:
+{chr(10).join(comp_lines)}
+
+HTML text content: {html_s['text_content_length']} chars
+JS-rendered text content: {js_s['text_content_length']} chars
+Text gap: {js_s['text_content_length'] - html_s['text_content_length']} chars hidden behind JavaScript
+
+Write a brief, client-friendly analysis (4-6 bullet points maximum) explaining:
+1. What critical content AI crawlers are MISSING on this page
+2. The business impact — what happens when AI can't see this content (be specific to the page type)
+3. One clear recommendation to fix the biggest gap
+
+Keep it concise and non-technical. Use plain language a brand manager would understand. Do not use markdown headers. Use bullet points with • character."""
+
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={"model": "claude-sonnet-4-20250514", "max_tokens": 500, "messages": [{"role": "user", "content": prompt}]},
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data["content"][0]["text"]
+    except Exception:
+        pass
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PILLAR 1: COMBINED JS RENDERING CHECK
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def check_js_rendering(url: str):
+    """Check JS rendering — fetches raw HTML and optionally JS-rendered version."""
     resp, err = fetch(url)
     if err or resp is None or resp.status_code != 200:
         return {"error": err or f"HTTP {resp.status_code if resp else '?'}"}
-    html = resp.text
-    frameworks = detect_js_frameworks(html)
-    content = analyse_html_content(html)
-    risk_factors = []
+
+    raw_html = resp.text
+    frameworks = detect_js_frameworks(raw_html)
+    html_content = analyse_html_content(raw_html)
+
+    # Try to get JS-rendered version
+    js_html, js_provider, js_error = fetch_js_rendered(url)
+    js_content = None
+    comparison = None
+
+    if js_html:
+        js_content = analyse_html_content(js_html)
+        comparison = compare_html_vs_js(raw_html, js_html)
+        comparison["provider"] = js_provider
+
+    # Calculate score
     score = 100
-    high_risk = [f for f in frameworks if f[1] == "high"]
-    if high_risk:
-        score -= 30
-        risk_factors.append(f"JS framework detected: {', '.join(f[0] for f in high_risk)}")
-    if not content["title"]:
-        score -= 10; risk_factors.append("No <title> tag in raw HTML")
-    if not content["h1_tags"]:
-        score -= 10; risk_factors.append("No <h1> tags found in raw HTML")
-    if content["product_elements"] > 0 and not content["prices"]:
-        score -= 15; risk_factors.append("Product elements detected but no prices in HTML")
-    if content["text_content_length"] < 200:
-        score -= 20; risk_factors.append(f"Very little text content ({content['text_content_length']} chars)")
-    elif content["text_content_length"] < 500:
-        score -= 10; risk_factors.append(f"Low text content ({content['text_content_length']} chars)")
-    if content["nav_links"] == 0:
-        score -= 10; risk_factors.append("No navigation links in raw HTML")
-    if not content["pagination"] and content["product_elements"] > 5:
-        score -= 5; risk_factors.append("Product listing but no pagination in HTML")
-    if [f for f in frameworks if f[0] == "JavaScript Required"]:
-        score -= 15
-    return {"score": max(0, min(100, score)), "frameworks": frameworks, "content": content, "risk_factors": risk_factors, "html_length": len(html), "error": None}
+    risk_factors = []
+
+    if comparison:
+        # Score based on actual comparison data
+        gap = comparison["gap_severity"]
+        if gap >= 0.6:
+            score -= 50; risk_factors.append(f"Severe content gap: {comparison['total_missing']} categories of content hidden behind JavaScript")
+        elif gap >= 0.3:
+            score -= 30; risk_factors.append(f"Significant content gap: {comparison['total_missing']} categories hidden behind JavaScript")
+        elif gap >= 0.1:
+            score -= 15; risk_factors.append(f"Minor content gap: {comparison['total_missing']} categories differ between HTML and JS")
+
+        # Check specific critical gaps
+        for c in comparison["comparison"]:
+            if c["status"] == "missing" and c["name"] in ("Product Prices", "Navigation Links", "Product Elements"):
+                score -= 10
+                risk_factors.append(f"{c['name']}: {c['html_val']} in HTML vs {c['js_val']} with JS — {c['impact']}")
+
+        # Text content gap
+        html_text = comparison["html_summary"]["text_content_length"]
+        js_text = comparison["js_summary"]["text_content_length"]
+        if js_text > 0 and html_text / max(js_text, 1) < 0.2:
+            score -= 15; risk_factors.append(f"Only {html_text}/{js_text} chars ({round(html_text/max(js_text,1)*100)}%) of text visible without JS")
+    else:
+        # Fallback: score based on HTML-only analysis (old logic)
+        high_risk = [f for f in frameworks if f[1] == "high"]
+        if high_risk:
+            score -= 30; risk_factors.append(f"JS framework detected: {', '.join(f[0] for f in high_risk)}")
+        if not html_content["title"]:
+            score -= 10; risk_factors.append("No <title> tag in raw HTML")
+        if not html_content["h1_tags"]:
+            score -= 10; risk_factors.append("No H1 tags found in raw HTML")
+        if html_content["product_elements"] > 0 and not html_content["prices"]:
+            score -= 15; risk_factors.append("Product elements detected but no prices in HTML")
+        if html_content["text_content_length"] < 200:
+            score -= 20; risk_factors.append(f"Very little text content ({html_content['text_content_length']} chars)")
+        elif html_content["text_content_length"] < 500:
+            score -= 10; risk_factors.append(f"Low text content ({html_content['text_content_length']} chars)")
+        if html_content["nav_links"] == 0:
+            score -= 10; risk_factors.append("No navigation links in raw HTML")
+        if [f for f in frameworks if f[0] == "JavaScript Required"]:
+            score -= 15
+
+    return {
+        "score": max(0, min(100, score)),
+        "frameworks": frameworks,
+        "content": html_content,
+        "js_content": js_content,
+        "comparison": comparison,
+        "js_provider": js_provider,
+        "js_error": js_error,
+        "risk_factors": risk_factors,
+        "html_length": len(raw_html),
+        "error": None,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -634,7 +875,20 @@ def generate_report_text(domain, overall, pillar_scores, url_labels, js_results,
             lines.append(f"  {label}: ERROR — {js_r['error']}")
             continue
         lines.append(f"  {label}: {js_r['score']}/100")
-        if js_r["risk_factors"]:
+        comp = js_r.get("comparison")
+        if comp:
+            lines.append(f"    Rendered via: {js_r.get('js_provider', 'N/A')}")
+            lines.append(f"    {'Content':<25} {'HTML':>8} {'JS':>8} {'Status':>10}")
+            lines.append(f"    {'-'*55}")
+            for c in comp["comparison"]:
+                st_text = "MISSING" if c["status"] == "missing" else "OK"
+                lines.append(f"    {c['name']:<25} {str(c['html_val']):>8} {str(c['js_val']):>8} {st_text:>10}")
+            html_text = comp["html_summary"]["text_content_length"]
+            js_text = comp["js_summary"]["text_content_length"]
+            if js_text > html_text:
+                pct = round(html_text / max(js_text, 1) * 100)
+                lines.append(f"    Content visibility: {pct}% ({html_text:,} / {js_text:,} chars)")
+        elif js_r["risk_factors"]:
             for rf in js_r["risk_factors"]:
                 lines.append(f"    ⚠ {rf}")
     lines.append("")
@@ -933,30 +1187,80 @@ if run_audit:
         if js_r.get("error"):
             st.error(f"Could not fetch {label}: {js_r['error']}")
             continue
-        with st.expander(f"{label} — Score: {js_r['score']}/100"):
+
+        comp = js_r.get("comparison")
+        provider = js_r.get("js_provider")
+        js_err = js_r.get("js_error")
+
+        with st.expander(f"{label} — Score: {js_r['score']}/100" + (f" (via {provider})" if provider else "")):
+
+            # Frameworks detected
             if js_r["frameworks"]:
-                st.markdown("**JS Frameworks / Indicators:**")
+                st.markdown("**JS Frameworks Detected:**")
                 for name, severity, note in js_r["frameworks"]:
                     st.markdown(brand_status(f"**{name}** ({severity}) — {note}", "danger" if severity == "high" else "warning"), unsafe_allow_html=True)
+
+            # === COMPARISON TABLE (if JS rendering API was available) ===
+            if comp:
+                st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:12px 0 8px 0;">HTML vs JavaScript — What AI Crawlers Miss:</div>', unsafe_allow_html=True)
+
+                # Table header
+                st.markdown(f'<div style="display:flex;padding:8px 12px;background:{BRAND["bg_surface"]};border-radius:8px 8px 0 0;font-weight:600;font-size:12px;color:{BRAND["text_secondary"]};text-transform:uppercase;letter-spacing:1px;"><div style="flex:2;">Content</div><div style="flex:1;text-align:center;">HTML (Crawler)</div><div style="flex:1;text-align:center;">JS (Browser)</div><div style="flex:2;">Impact</div></div>', unsafe_allow_html=True)
+
+                for c in comp["comparison"]:
+                    html_v = str(c["html_val"])
+                    js_v = str(c["js_val"])
+                    if c["status"] == "missing":
+                        row_bg = f"{BRAND['danger']}15"
+                        impact_html = f'<span style="color:{BRAND["danger"]};font-size:12px;">{c["impact"]}</span>'
+                        html_color = BRAND["danger"]
+                        js_color = BRAND["teal"]
+                    else:
+                        row_bg = "transparent"
+                        impact_html = f'<span style="color:{BRAND["teal"]};font-size:12px;">OK</span>'
+                        html_color = BRAND["teal"]
+                        js_color = BRAND["teal"]
+
+                    st.markdown(f'<div style="display:flex;padding:6px 12px;border-bottom:1px solid {BRAND["border"]};background:{row_bg};align-items:center;"><div style="flex:2;color:{BRAND["white"]};font-size:13px;">{c["name"]}</div><div style="flex:1;text-align:center;color:{html_color};font-weight:700;font-size:13px;">{html_v}</div><div style="flex:1;text-align:center;color:{js_color};font-size:13px;">{js_v}</div><div style="flex:2;">{impact_html}</div></div>', unsafe_allow_html=True)
+
+                # Text content gap highlight
+                html_text = comp["html_summary"]["text_content_length"]
+                js_text = comp["js_summary"]["text_content_length"]
+                if js_text > html_text:
+                    pct = round(html_text / max(js_text, 1) * 100)
+                    gap_color = BRAND["danger"] if pct < 30 else BRAND["warning"] if pct < 70 else BRAND["teal"]
+                    st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:10px;padding:14px 18px;margin:12px 0;"><div style="font-size:11px;color:{BRAND["text_secondary"]};text-transform:uppercase;letter-spacing:1px;">Content Visibility</div><div style="font-size:20px;font-weight:700;color:{gap_color};">{pct}% <span style="font-size:14px;opacity:0.5;">of content visible to AI</span></div><div style="font-size:12px;color:{BRAND["text_secondary"]};">HTML: {html_text:,} chars · JS-rendered: {js_text:,} chars · Hidden: {js_text - html_text:,} chars</div></div>', unsafe_allow_html=True)
+
+                # AI Analysis
+                ai_analysis = ai_analyse_js_gap(test_url, comp, label)
+                if ai_analysis:
+                    st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{ai_analysis}</div>', unsafe_allow_html=True)
+
             else:
-                st.markdown(brand_status("No JS-heavy framework indicators — content accessible to simple crawlers", "success"), unsafe_allow_html=True)
-            if js_r["risk_factors"]:
-                st.markdown("**Risk Factors:**")
-                for rf in js_r["risk_factors"]:
-                    st.markdown(brand_status(rf, "warning"), unsafe_allow_html=True)
-            c = js_r["content"]
-            st.markdown("**Content Visible in Raw HTML:**")
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.markdown(brand_status(f"Title: {c['title'] or 'Missing'}", "success" if c["title"] else "danger"), unsafe_allow_html=True)
-                st.markdown(brand_status(f"Meta Desc: {'Present' if c['meta_description'] else 'Missing'}", "success" if c["meta_description"] else "danger"), unsafe_allow_html=True)
-                st.markdown(brand_status(f"H1 Tags: {len(c['h1_tags'])}", "success" if c["h1_tags"] else "warning"), unsafe_allow_html=True)
-                st.markdown(brand_status(f"Prices: {len(c['prices'])} found", "success" if c["prices"] else "info"), unsafe_allow_html=True)
-            with col_b:
-                st.markdown(brand_status(f"Nav Links: {c['nav_links']}", "success" if c["nav_links"] else "warning"), unsafe_allow_html=True)
-                st.markdown(brand_status(f"Total Links: {c['total_links']}", "success" if c["total_links"] else "warning"), unsafe_allow_html=True)
-                st.markdown(brand_status(f"Images (alt): {c['images_with_alt']} / (no alt): {c['images_without_alt']}", "success" if not c["images_without_alt"] else "warning"), unsafe_allow_html=True)
-                st.markdown(brand_status(f"Text: {c['text_content_length']:,} chars", "success" if c["text_content_length"] > 500 else "warning"), unsafe_allow_html=True)
+                # Fallback display when no JS rendering API available
+                if js_err:
+                    st.markdown(brand_status(f"JS rendering not available: {js_err}", "info"), unsafe_allow_html=True)
+                    st.caption("Configure API keys in Streamlit Secrets for full HTML vs JS comparison.")
+
+                if js_r["risk_factors"]:
+                    st.markdown("**Risk Factors (estimated from HTML analysis):**")
+                    for rf in js_r["risk_factors"]:
+                        st.markdown(brand_status(rf, "warning"), unsafe_allow_html=True)
+
+                c = js_r["content"]
+                st.markdown("**Content Visible in Raw HTML:**")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.markdown(brand_status(f"Title: {c['title'] or 'Missing'}", "success" if c["title"] else "danger"), unsafe_allow_html=True)
+                    st.markdown(brand_status(f"Meta Desc: {'Present' if c['meta_description'] else 'Missing'}", "success" if c["meta_description"] else "danger"), unsafe_allow_html=True)
+                    st.markdown(brand_status(f"H1 Tags: {len(c['h1_tags'])}", "success" if c["h1_tags"] else "warning"), unsafe_allow_html=True)
+                    st.markdown(brand_status(f"Prices: {len(c['prices'])} found", "success" if c["prices"] else "info"), unsafe_allow_html=True)
+                with col_b:
+                    st.markdown(brand_status(f"Nav Links: {c['nav_links']}", "success" if c["nav_links"] else "warning"), unsafe_allow_html=True)
+                    st.markdown(brand_status(f"Total Links: {c['total_links']}", "success" if c["total_links"] else "warning"), unsafe_allow_html=True)
+                    st.markdown(brand_status(f"Images (alt): {c['images_with_alt']} / (no alt): {c['images_without_alt']}", "success" if not c["images_without_alt"] else "warning"), unsafe_allow_html=True)
+                    st.markdown(brand_status(f"Text: {c['text_content_length']:,} chars", "success" if c["text_content_length"] > 500 else "warning"), unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════════════
     # PILLAR 2: LLM.TXT
