@@ -1714,3 +1714,75 @@ Check for:
 
 Give a verdict (Coherent / Needs Review / Inconsistent) with 2-3 specific observations.
 Keep under 150 words.""", max_tokens=250)
+
+
+def ai_analyse_js_gap(url, comparison, page_label, get_secret) -> str | None:
+    """
+    JS gap AI analysis — generates client-friendly explanation of HTML vs JS content gaps.
+    Uses Bifrost (BIFROST_API_KEY) if available, falls back to Anthropic (ANTHROPIC_API_KEY).
+    Called from the JS Rendering pillar UI for each page with a comparison result.
+    """
+    # Try Bifrost first
+    api_key = get_secret("BIFROST_API_KEY", "")
+    use_bifrost = bool(api_key)
+
+    # Fall back to Anthropic direct key
+    if not api_key:
+        api_key = get_secret("ANTHROPIC_API_KEY", "")
+    if not api_key or not comparison:
+        return None
+
+    comp_lines = []
+    for c in comparison.get("comparison", []):
+        status = "MISSING" if c["status"] == "missing" else "OK"
+        comp_lines.append(f"- {c['name']}: HTML={c['html_val']}, JS-rendered={c['js_val']} ({status})")
+
+    html_len = comparison.get("html_summary", {}).get("text_content_length", 0)
+    js_len   = comparison.get("js_summary", {}).get("text_content_length", 0)
+
+    prompt = f"""You are an AI SEO expert analysing a website's AI-readiness.
+A page was loaded twice: once as raw HTML (what AI crawlers see) and once with JavaScript rendered (what a browser sees).
+
+URL: {url}
+Page type: {page_label}
+
+CONTENT COMPARISON:
+{chr(10).join(comp_lines)}
+
+HTML text content: {html_len:,} chars
+JS-rendered text: {js_len:,} chars
+Hidden behind JS: {max(0, js_len - html_len):,} chars
+
+Write 4-6 bullet points (use • character) for a brand manager explaining:
+1. What critical content AI crawlers are MISSING on this page
+2. The business impact — what happens when AI can't see this (be specific to the page type)
+3. One clear recommendation to fix the biggest gap
+
+Keep it concise and non-technical. Plain language a brand manager would understand. No markdown headers."""
+
+    try:
+        if use_bifrost:
+            resp = requests.post(
+                "https://bifrost.pattern.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": "openai/gpt-4o-mini", "max_tokens": 500, "temperature": 0.3,
+                      "messages": [{"role": "user", "content": prompt}]},
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"]
+        else:
+            # Anthropic fallback
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": "claude-sonnet-4-20250514", "max_tokens": 500,
+                      "messages": [{"role": "user", "content": prompt}]},
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                return resp.json()["content"][0]["text"]
+    except Exception:
+        pass
+    return None
