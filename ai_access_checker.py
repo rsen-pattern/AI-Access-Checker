@@ -347,7 +347,7 @@ def generate_report_text(domain, overall, pillar_scores, url_labels, js_results,
         lines.append(f"  robots.txt: Found")
         lines.append(f"  Sitemaps: {len(robots_result['sitemaps'])}")
         lines.append(f"  Blocked resources: {', '.join(robots_result['blocked_resources']) or 'None'}")
-        exposed = sum(1 for p, r in robots_result["sensitive_paths"].items() if r["accessible_per_robots"])
+        exposed = sum(1 for p, r in robots_result["sensitive_paths"].items() if not r.get("blocked", not r.get("accessible_per_robots", False)))
         lines.append(f"  Sensitive paths exposed: {exposed}/{len(robots_result['sensitive_paths'])}")
         lines.append("  AI Agent Access:")
         for bn, info in robots_result["ai_agent_results"].items():
@@ -657,7 +657,7 @@ if run_audit:
             total_bots = len(bot_crawl_results) if bot_crawl_results else "—"
             st.metric("Bot Access", f"{allowed_bots}/{total_bots}")
         with sub_cols[2]:
-            exposed_count = sum(1 for p, r in robots_result.get("sensitive_paths", {}).items() if r["accessible_per_robots"])
+            exposed_count = sum(1 for p, r in robots_result.get("sensitive_paths", {}).items() if not r.get("blocked", not r.get("accessible_per_robots", False)))
             st.metric("Paths Exposed", exposed_count)
 
     # ── STRONGEST / WEAKEST PILLAR ────────────────────────────────────────
@@ -838,8 +838,8 @@ if run_audit:
             st.markdown(brand_status(f"Blocked resources: {', '.join(robots_result['blocked_resources'])}", "danger"), unsafe_allow_html=True)
         else:
             st.markdown(brand_status("CSS/JS not blocked — AI agents can render pages", "success"), unsafe_allow_html=True)
-        exposed = [(p, r) for p, r in robots_result["sensitive_paths"].items() if r["accessible_per_robots"]]
-        blocked = [(p, r) for p, r in robots_result["sensitive_paths"].items() if not r["accessible_per_robots"]]
+        exposed = [(p, r) for p, r in robots_result.get("sensitive_paths", {}).items() if not r.get("blocked", not r.get("accessible_per_robots", False))]
+        blocked = [(p, r) for p, r in robots_result.get("sensitive_paths", {}).items() if r.get("blocked", not r.get("accessible_per_robots", True))]
         with st.expander(f"Sensitive Path Scan — {len(exposed)} exposed, {len(blocked)} blocked"):
             if exposed:
                 for path, r in exposed:
@@ -1015,7 +1015,7 @@ if run_audit:
                 recs.append(("danger", "Robots.txt", f"AI crawlers explicitly blocked: {', '.join(explicitly_blocked)}. Add Allow rules for these bots to restore AI visibility."))
             sensitive = robots_result.get("sensitive_paths", robots_result.get("sensitive", {}))
             critical_exposed = [p for p, r in sensitive.items()
-                                if r.get("accessible_per_robots", r.get("exposed", False))
+                                if not r.get("blocked", not r.get("accessible_per_robots", r.get("exposed", False)))
                                 and any(x in p for x in ["/admin", "/api", "/.env", "/config", "/database"])]
             if critical_exposed:
                 recs.append(("danger", "Security", f"Critical paths exposed: {', '.join(critical_exposed[:4])}. Add Disallow rules immediately."))
