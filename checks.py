@@ -1718,17 +1718,10 @@ Keep under 150 words.""", max_tokens=250)
 
 def ai_analyse_js_gap(url, comparison, page_label, get_secret) -> str | None:
     """
-    JS gap AI analysis — generates client-friendly explanation of HTML vs JS content gaps.
-    Uses Bifrost (BIFROST_API_KEY) if available, falls back to Anthropic (ANTHROPIC_API_KEY).
-    Called from the JS Rendering pillar UI for each page with a comparison result.
+    JS gap AI analysis via Bifrost (BIFROST_API_KEY).
+    Generates a client-friendly explanation of HTML vs JS content gaps per page.
     """
-    # Try Bifrost first
     api_key = get_secret("BIFROST_API_KEY", "")
-    use_bifrost = bool(api_key)
-
-    # Fall back to Anthropic direct key
-    if not api_key:
-        api_key = get_secret("ANTHROPIC_API_KEY", "")
     if not api_key or not comparison:
         return None
 
@@ -1760,29 +1753,4 @@ Write 4-6 bullet points (use • character) for a brand manager explaining:
 
 Keep it concise and non-technical. Plain language a brand manager would understand. No markdown headers."""
 
-    try:
-        if use_bifrost:
-            resp = requests.post(
-                "https://bifrost.pattern.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"model": "openai/gpt-4o-mini", "max_tokens": 500, "temperature": 0.3,
-                      "messages": [{"role": "user", "content": prompt}]},
-                timeout=30,
-            )
-            if resp.status_code == 200:
-                return resp.json()["choices"][0]["message"]["content"]
-        else:
-            # Anthropic fallback
-            resp = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
-                         "content-type": "application/json"},
-                json={"model": "claude-sonnet-4-20250514", "max_tokens": 500,
-                      "messages": [{"role": "user", "content": prompt}]},
-                timeout=30,
-            )
-            if resp.status_code == 200:
-                return resp.json()["content"][0]["text"]
-    except Exception:
-        pass
-    return None
+    return _bifrost_call(api_key, prompt, max_tokens=500)
