@@ -66,20 +66,24 @@ PATTERN_LOGO_SVG = '''<svg width="180" height="36" viewBox="0 0 675 135.7" fill=
 # ─── PILLAR EXPLANATIONS ─────────────────────────────────────────────────────
 PILLAR_INFO = {
     "js_rendering": {
-        "what": "We load each page twice — once as raw HTML (what AI crawlers see) and once with JavaScript fully executed (what a browser sees). We then compare the two side-by-side to show exactly what content AI agents are missing. We check prices, product images, navigation, headings, reviews, text content, and links. An AI agent then analyses the gaps and explains the business impact.",
-        "why": "Most AI crawlers (GPTBot, ClaudeBot, PerplexityBot) do not execute JavaScript. If your product prices, descriptions, navigation, or pagination only appear after JavaScript runs, AI agents see an empty or incomplete page. This means your products won't appear in AI-generated answers, and AI may fill gaps with inaccurate third-party data. The comparison table shows exactly what's hidden.",
+        "what": "We load each page twice — once as raw HTML (what AI crawlers see) and once with JavaScript fully executed. We compare side-by-side to show exactly what content AI agents miss: prices, product images, navigation, reviews, text, and links. We also check for render-blocking scripts, lazy-loaded images without dimensions, and JS framework detection. An AI agent then analyses the gaps.",
+        "why": "Most AI crawlers (GPTBot, ClaudeBot, PerplexityBot) do not execute JavaScript. Per BAISOM Layer 2: 'If your content needs JavaScript to appear, it doesn't exist for most AI.' This means products, prices, and descriptions that load via JS are invisible to AI shopping agents — which will then fall back to third-party data, potentially surfacing incorrect pricing or negative sentiment about your brand.",
     },
-    "llm_txt": {
-        "what": "We check for the presence and quality of llm.txt files at /llm.txt, /llms.txt, /llms-full.txt, and /.well-known/llm.txt. We evaluate whether the file has a title, description, links to key pages, and clear section structure.",
-        "why": "llm.txt is an emerging standard that gives AI agents explicit guidance about your site — what to prioritise, what content matters most, and how to interpret your brand. Without it, AI crawlers must guess which pages are important. Early adopters gain a competitive advantage in how AI systems represent their brand.",
+    "llm_discoverability": {
+        "what": "We check for llm.txt files (4 path variants), an AI Info Page (/ai-info, /for-ai etc.), and all /.well-known/ AI guidance files: ai-plugin.json (OpenAI), ucp (Universal Commerce Protocol, Jan 2026), mcp.json (WebMCP by Microsoft/Google), and tdmrep.json. JSON files are validated — a malformed file is flagged, not just 'found'.",
+        "why": "These files tell AI agents what your site does, what to prioritise, and how to interact with it. The Universal Commerce Protocol lets AI shopping agents discover your checkout capabilities. WebMCP lets agents interact with your site's tools. The AI Info Page is something you can build today — unlike llm.txt which has near 0% industry adoption — and it positions your brand to control its own AI narrative.",
     },
     "robots_txt": {
-        "what": "We fetch and parse your robots.txt, testing access rules against 16+ AI bot user agents (GPTBot, ClaudeBot, Google-Extended, PerplexityBot, etc.). We check for sitemaps, blocked CSS/JS resources, and scan 25+ sensitive paths (/admin, /account, /checkout, /api, /.env) for exposure. We also perform live crawl tests — sending actual HTTP requests as each AI bot.",
-        "why": "robots.txt is the foundational control for who can access your site. Without AI-specific rules, you're either invisible to AI (blocking too much) or exposing sensitive data (blocking too little). A 'smart access' policy feeds AI your public marketing content while protecting customer data, admin panels, and proprietary information.",
+        "what": "We parse your robots.txt against 16 AI bot user agents, check for sitemaps, blocked CSS/JS, and 25+ sensitive path exposures. We run live crawl tests as each AI bot. We also detect Cloudflare Bot Fight Mode — per BAISOM: 'Check if Cloudflare is not already blocking AI bots for you' — which silently blocks legitimate AI crawlers even when robots.txt allows them.",
+        "why": "robots.txt now controls AI access, not just search access. Blocking AI crawlers = choosing invisibility in AI answers. Cloudflare's Bot Fight Mode blocks ChatGPT-User (which surged 2,825% YoY) and PerplexityBot without any robots.txt instruction. A misconfigured Cloudflare setup can make your site invisible to AI agents regardless of all other optimisations.",
     },
     "schema": {
-        "what": "On each page, we parse all JSON-LD and Microdata structured data. We validate against expected schema types per page template (Organisation/WebSite/WebPage/BreadcrumbList for site-wide; Product/Offer/Brand for product pages; Article/FAQ for content). We check key field completeness (name, price, availability, image, etc.) and flag missing or incomplete markup.",
-        "why": "Schema is how you tell AI exactly what's on your page in a machine-readable format. Without it, AI must infer meaning from raw text — often incorrectly. With complete Product schema, AI can accurately surface your prices, availability, and reviews. Without it, AI may show wrong prices, miss that items are in stock, or attribute your products to competitors.",
+        "what": "We parse all JSON-LD and Microdata per page. We validate field completeness including ecommerce-critical fields: GTIN/MPN (product identifiers required by AI shopping agents), MerchantReturnPolicy, shippingDetails, AggregateRating depth, and Organization sameAs. We also check for price/schema consistency and outbound citations to authoritative domains.",
+        "why": "Schema is the machine-readable 'entity card' that feeds both Google's Knowledge Graph and LLM entity understanding. Products without GTINs are excluded or deprioritised by AI shopping agents — research shows 60% of ecommerce catalogs have missing GTINs. Organization sameAs connects your site to your LinkedIn, Wikipedia, and social profiles, creating the consistent entity presence AI systems use to verify and trust your brand.",
+    },
+    "semantic_content": {
+        "what": "We check BAISOM Layers 3–6: accessibility (alt text, ARIA landmarks, form labels, lang attribute), content architecture (answer-first summary paragraphs, heading hierarchy, descriptive vs vague headings), internal linking depth and topic clustering, and content clarity (specific facts vs vague marketing language).",
+        "why": "BAISOM Layer 4: 'AI doesn't scroll. It reads top-down and decides in milliseconds.' A summary paragraph in the first 60 words dramatically increases AI citation probability. Topic clustering — multiple pages linked around one subject — causes AI to treat your brand as THE authoritative source on that topic. Princeton KDD research found adding statistics to content increases AI visibility by up to 41%.",
     },
 }
 
@@ -255,583 +259,18 @@ def pillar_explainer(pillar_key):
 # JS RENDERING API — CASCADING FALLBACK
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def fetch_js_rendered(url: str):
-    """Fetch JS-rendered HTML using cascading API fallback: ScrapingBee → Scrapfly → Browserless.
-    Returns (html_string, provider_used, error_or_none)."""
-
-    # --- Provider 1: ScrapingBee ---
-    api_key = get_secret("SCRAPINGBEE_API_KEY", "")
-    if api_key:
-        try:
-            resp = requests.get(
-                "https://app.scrapingbee.com/api/v1/",
-                params={"api_key": api_key, "url": url, "render_js": "true", "premium_proxy": "false"},
-                timeout=45,
-            )
-            if resp.status_code == 200 and len(resp.text) > 200:
-                return resp.text, "ScrapingBee", None
-        except Exception as e:
-            pass  # fall through to next provider
-
-    # --- Provider 2: Scrapfly ---
-    api_key = get_secret("SCRAPFLY_API_KEY", "")
-    if api_key:
-        try:
-            resp = requests.get(
-                "https://api.scrapfly.io/scrape",
-                params={"key": api_key, "url": url, "render_js": "true", "asp": "false"},
-                timeout=45,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                html = data.get("result", {}).get("content", "")
-                if html and len(html) > 200:
-                    return html, "Scrapfly", None
-        except Exception as e:
-            pass  # fall through to next provider
-
-    # --- Provider 3: Browserless ---
-    api_key = get_secret("BROWSERLESS_API_KEY", "")
-    if api_key:
-        try:
-            resp = requests.post(
-                f"https://chrome.browserless.io/content?token={api_key}",
-                json={"url": url, "waitFor": 3000},
-                timeout=45,
-            )
-            if resp.status_code == 200 and len(resp.text) > 200:
-                return resp.text, "Browserless", None
-        except Exception as e:
-            pass
-
-    # No provider available
-    return None, None, "No JS rendering API key configured. Add SCRAPINGBEE_API_KEY, SCRAPFLY_API_KEY, or BROWSERLESS_API_KEY in Streamlit Secrets."
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# HTML vs JS COMPARISON ENGINE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def analyse_html_content(html: str):
-    """Extract key content elements from HTML."""
-    soup = BeautifulSoup(html, "html.parser")
-    results = {"title": "", "meta_description": "", "h1_tags": [], "h2_tags": [], "prices": [], "images_with_alt": 0, "images_without_alt": 0, "images_total": 0, "nav_links": 0, "product_elements": 0, "text_content_length": 0, "total_links": 0, "pagination": False, "reviews": 0, "forms": 0}
-    title = soup.find("title")
-    results["title"] = title.get_text(strip=True) if title else ""
-    meta_desc = soup.find("meta", attrs={"name": "description"})
-    results["meta_description"] = meta_desc.get("content", "") if meta_desc else ""
-    results["h1_tags"] = [h.get_text(strip=True) for h in soup.find_all("h1")][:10]
-    results["h2_tags"] = [h.get_text(strip=True) for h in soup.find_all("h2")][:20]
-    text = soup.get_text()
-    price_patterns = re.findall(r'[\$£€]\s?\d+[\.,]?\d*', text)
-    results["prices"] = list(set(price_patterns))[:20]
-    price_elements = soup.find_all(class_=re.compile(r'price|cost|amount', re.I))
-    price_elements += soup.find_all(attrs={"itemprop": "price"})
-    if price_elements and not results["prices"]:
-        for el in price_elements[:10]:
-            txt = el.get_text(strip=True)
-            if txt: results["prices"].append(txt)
-    images = soup.find_all("img")
-    results["images_total"] = len(images)
-    results["images_with_alt"] = sum(1 for img in images if img.get("alt", "").strip())
-    results["images_without_alt"] = sum(1 for img in images if not img.get("alt", "").strip())
-    nav = soup.find_all("nav")
-    results["nav_links"] = sum(len(n.find_all("a")) for n in nav)
-    results["total_links"] = len(soup.find_all("a", href=True))
-    product_indicators = soup.find_all(class_=re.compile(r'product|item|card', re.I))
-    results["product_elements"] = len(product_indicators)
-    pagination = soup.find_all(class_=re.compile(r'pagination|pager|page-nav', re.I))
-    results["pagination"] = len(pagination) > 0 or bool(soup.find("a", string=re.compile(r'^(next|›|»|→)', re.I)))
-    results["text_content_length"] = len(soup.get_text(separator=" ", strip=True))
-    results["reviews"] = len(soup.find_all(class_=re.compile(r'review|testimonial|rating', re.I)))
-    results["forms"] = len(soup.find_all("form"))
-    return results
-
-
-def detect_js_frameworks(html: str):
-    """Detect JS frameworks from raw HTML."""
-    soup = BeautifulSoup(html, "html.parser")
-    frameworks = []
-    if soup.find(id="root") or soup.find(id="__next") or soup.find(id="app"):
-        root_el = soup.find(id="root") or soup.find(id="__next") or soup.find(id="app")
-        if root_el and len(root_el.get_text(strip=True)) < 50:
-            frameworks.append(("React / Next.js", "high", "Empty root container — content likely client-side"))
-    if soup.find(id="__nuxt") or soup.find(attrs={"data-v-app": True}):
-        frameworks.append(("Vue.js / Nuxt", "high", "Vue app container detected"))
-    if soup.find(attrs={"ng-app": True}) or soup.find("app-root"):
-        frameworks.append(("Angular", "high", "Angular app root detected"))
-    noscript_tags = soup.find_all("noscript")
-    noscript_warnings = [ns for ns in noscript_tags if "enable javascript" in ns.get_text().lower() or "requires javascript" in ns.get_text().lower()]
-    if noscript_warnings:
-        frameworks.append(("JavaScript Required", "high", f"{len(noscript_warnings)} noscript warning(s)"))
-    scripts = soup.find_all("script", src=True)
-    bundled = [s for s in scripts if any(x in (s.get("src", "") or "") for x in ["chunk", "bundle", "webpack", "main.", "app."])]
-    if len(bundled) > 3:
-        frameworks.append(("Bundled JS (Webpack/Vite)", "medium", f"{len(bundled)} bundled script(s)"))
-    return frameworks
-
-
-def compare_html_vs_js(html_content, js_content):
-    """Compare raw HTML vs JS-rendered content and return structured comparison."""
-    html = analyse_html_content(html_content)
-    js = analyse_html_content(js_content)
-
-    comparison = []
-    metrics = [
-        ("Product Prices", len(html["prices"]), len(js["prices"]), "AI cannot show your pricing"),
-        ("H1 Headings", len(html["h1_tags"]), len(js["h1_tags"]), "AI can't identify page topic"),
-        ("H2 Headings", len(html["h2_tags"]), len(js["h2_tags"]), "AI misses content structure"),
-        ("Navigation Links", html["nav_links"], js["nav_links"], "AI can't discover other pages from here"),
-        ("Total Links", html["total_links"], js["total_links"], "Reduces internal linking for AI crawlers"),
-        ("Images", html["images_total"], js["images_total"], "No visual context for AI"),
-        ("Images with Alt Text", html["images_with_alt"], js["images_with_alt"], "AI can't understand your images"),
-        ("Product Elements", html["product_elements"], js["product_elements"], "AI can't see your products"),
-        ("Text Content (chars)", html["text_content_length"], js["text_content_length"], "AI sees very little about your page"),
-        ("Reviews/Ratings", html["reviews"], js["reviews"], "AI won't surface your social proof"),
-        ("Forms", html["forms"], js["forms"], "Action engines can't interact with your site"),
-    ]
-
-    for name, html_val, js_val, impact in metrics:
-        if js_val > html_val:
-            status = "missing"
-            delta = js_val - html_val
-        elif js_val == html_val:
-            status = "ok"
-            delta = 0
-        else:
-            status = "ok"
-            delta = 0
-        comparison.append({
-            "name": name,
-            "html_val": html_val,
-            "js_val": js_val,
-            "status": status,
-            "delta": delta,
-            "impact": impact if status == "missing" else "",
-        })
-
-    # Title comparison
-    title_match = html["title"] == js["title"]
-    comparison.insert(0, {
-        "name": "Page Title",
-        "html_val": f'"{html["title"][:60]}"' if html["title"] else "Missing",
-        "js_val": f'"{js["title"][:60]}"' if js["title"] else "Missing",
-        "status": "ok" if html["title"] else "missing",
-        "delta": 0,
-        "impact": "AI can't identify this page" if not html["title"] else "",
-    })
-
-    # Calculate overall gap score
-    total_metrics = len([c for c in comparison if isinstance(c["html_val"], int) and isinstance(c["js_val"], int)])
-    missing_metrics = len([c for c in comparison if c["status"] == "missing"])
-    gap_severity = missing_metrics / max(total_metrics, 1)
-
-    return {
-        "comparison": comparison,
-        "html_summary": html,
-        "js_summary": js,
-        "gap_severity": gap_severity,
-        "total_missing": missing_metrics,
-        "provider": None,  # set by caller
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CLAUDE AI ANALYSIS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def ai_analyse_js_gap(url, comparison_result, page_label):
-    """Use Claude API to generate client-friendly analysis of HTML vs JS gaps."""
-    api_key = get_secret("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return None
-
-    # Build the comparison summary for Claude
-    comp_lines = []
-    for c in comparison_result["comparison"]:
-        if c["status"] == "missing":
-            comp_lines.append(f"- {c['name']}: HTML has {c['html_val']}, JS-rendered has {c['js_val']} (MISSING {c['delta']})")
-        else:
-            comp_lines.append(f"- {c['name']}: HTML has {c['html_val']}, JS-rendered has {c['js_val']} (OK)")
-
-    html_s = comparison_result["html_summary"]
-    js_s = comparison_result["js_summary"]
-
-    prompt = f"""You are an AI SEO expert analysing a website's AI-readiness. A page was loaded twice: once as raw HTML (what AI crawlers like GPTBot and ClaudeBot see) and once with JavaScript fully rendered (what a browser sees).
-
-URL: {url}
-Page type: {page_label}
-
-COMPARISON DATA:
-{chr(10).join(comp_lines)}
-
-HTML text content: {html_s['text_content_length']} chars
-JS-rendered text content: {js_s['text_content_length']} chars
-Text gap: {js_s['text_content_length'] - html_s['text_content_length']} chars hidden behind JavaScript
-
-Write a brief, client-friendly analysis (4-6 bullet points maximum) explaining:
-1. What critical content AI crawlers are MISSING on this page
-2. The business impact — what happens when AI can't see this content (be specific to the page type)
-3. One clear recommendation to fix the biggest gap
-
-Keep it concise and non-technical. Use plain language a brand manager would understand. Do not use markdown headers. Use bullet points with • character."""
-
-    try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            json={"model": "claude-sonnet-4-20250514", "max_tokens": 500, "messages": [{"role": "user", "content": prompt}]},
-            timeout=30,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            return data["content"][0]["text"]
-    except Exception:
-        pass
-    return None
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PILLAR 1: COMBINED JS RENDERING CHECK
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def check_js_rendering(url: str):
-    """Check JS rendering — fetches raw HTML and optionally JS-rendered version."""
-    resp, err = fetch(url)
-    if err or resp is None or resp.status_code != 200:
-        return {"error": err or f"HTTP {resp.status_code if resp else '?'}"}
-
-    raw_html = resp.text
-    frameworks = detect_js_frameworks(raw_html)
-    html_content = analyse_html_content(raw_html)
-
-    # Try to get JS-rendered version
-    js_html, js_provider, js_error = fetch_js_rendered(url)
-    js_content = None
-    comparison = None
-
-    if js_html:
-        js_content = analyse_html_content(js_html)
-        comparison = compare_html_vs_js(raw_html, js_html)
-        comparison["provider"] = js_provider
-
-    # Calculate score
-    score = 100
-    risk_factors = []
-
-    if comparison:
-        # Score based on actual comparison data
-        gap = comparison["gap_severity"]
-        if gap >= 0.6:
-            score -= 50; risk_factors.append(f"Severe content gap: {comparison['total_missing']} categories of content hidden behind JavaScript")
-        elif gap >= 0.3:
-            score -= 30; risk_factors.append(f"Significant content gap: {comparison['total_missing']} categories hidden behind JavaScript")
-        elif gap >= 0.1:
-            score -= 15; risk_factors.append(f"Minor content gap: {comparison['total_missing']} categories differ between HTML and JS")
-
-        # Check specific critical gaps
-        for c in comparison["comparison"]:
-            if c["status"] == "missing" and c["name"] in ("Product Prices", "Navigation Links", "Product Elements"):
-                score -= 10
-                risk_factors.append(f"{c['name']}: {c['html_val']} in HTML vs {c['js_val']} with JS — {c['impact']}")
-
-        # Text content gap
-        html_text = comparison["html_summary"]["text_content_length"]
-        js_text = comparison["js_summary"]["text_content_length"]
-        if js_text > 0 and html_text / max(js_text, 1) < 0.2:
-            score -= 15; risk_factors.append(f"Only {html_text}/{js_text} chars ({round(html_text/max(js_text,1)*100)}%) of text visible without JS")
-    else:
-        # Fallback: score based on HTML-only analysis (old logic)
-        high_risk = [f for f in frameworks if f[1] == "high"]
-        if high_risk:
-            score -= 30; risk_factors.append(f"JS framework detected: {', '.join(f[0] for f in high_risk)}")
-        if not html_content["title"]:
-            score -= 10; risk_factors.append("No <title> tag in raw HTML")
-        if not html_content["h1_tags"]:
-            score -= 10; risk_factors.append("No H1 tags found in raw HTML")
-        if html_content["product_elements"] > 0 and not html_content["prices"]:
-            score -= 15; risk_factors.append("Product elements detected but no prices in HTML")
-        if html_content["text_content_length"] < 200:
-            score -= 20; risk_factors.append(f"Very little text content ({html_content['text_content_length']} chars)")
-        elif html_content["text_content_length"] < 500:
-            score -= 10; risk_factors.append(f"Low text content ({html_content['text_content_length']} chars)")
-        if html_content["nav_links"] == 0:
-            score -= 10; risk_factors.append("No navigation links in raw HTML")
-        if [f for f in frameworks if f[0] == "JavaScript Required"]:
-            score -= 15
-
-    return {
-        "score": max(0, min(100, score)),
-        "frameworks": frameworks,
-        "content": html_content,
-        "js_content": js_content,
-        "comparison": comparison,
-        "js_provider": js_provider,
-        "js_error": js_error,
-        "risk_factors": risk_factors,
-        "html_length": len(raw_html),
-        "error": None,
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PILLAR 2: LLM.TXT (logic unchanged)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def check_llm_txt(base_url: str):
-    results = {}
-    for path in ["/llm.txt", "/llms.txt", "/llms-full.txt", "/.well-known/llm.txt"]:
-        url = urljoin(base_url, path)
-        resp, err = fetch(url, timeout=10)
-        found = False; content = ""; quality = {}
-        if resp and resp.status_code == 200:
-            text = resp.text.strip()
-            if len(text) > 10 and not text.startswith("<!DOCTYPE") and not text.startswith("<html"):
-                found = True; content = text[:5000]
-                quality = {"has_title": bool(re.search(r'^#\s+', text, re.M)), "has_description": len(text) > 100, "has_links": bool(re.search(r'https?://', text)), "has_sections": text.count("\n\n") > 2, "char_count": len(text), "line_count": len(text.splitlines())}
-        results[path] = {"found": found, "url": url, "content": content, "quality": quality}
-    any_found = any(v["found"] for v in results.values())
-    if not any_found:
-        score = 0
-    else:
-        score = 50
-        found_items = [v for v in results.values() if v["found"]]
-        q = found_items[0].get("quality", {})
-        if q.get("has_title"): score += 10
-        if q.get("has_description"): score += 10
-        if q.get("has_links"): score += 15
-        if q.get("has_sections"): score += 10
-        if q.get("char_count", 0) > 500: score += 5
-    return {"files": results, "score": min(score, 100)}
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PILLAR 3: ROBOTS.TXT (logic unchanged)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def check_robots(base_url: str):
-    robots_url = urljoin(base_url, "/robots.txt")
-    resp, err = fetch(robots_url)
-    if err or resp is None or resp.status_code != 200:
-        return {"found": False, "url": robots_url, "error": err, "raw": "", "parser": None, "sitemaps": [], "ai_agent_results": {}, "sensitive_paths": {}, "blocked_resources": [], "score": 0}
-    raw = resp.text
-    try: parser = Protego.parse(raw)
-    except Exception: parser = None
-    sitemaps = []
-    for line in raw.splitlines():
-        stripped = line.split("#")[0].strip()
-        if stripped.lower().startswith("sitemap:"):
-            sitemaps.append(stripped.split(":", 1)[1].strip())
-    ai_agent_results = {}
-    test_url = base_url + "/"
-    for company, bots in AI_BOTS.items():
-        for bot_name, ua_string in bots.items():
-            allowed = None
-            if parser:
-                try: allowed = parser.can_fetch(ua_string, test_url)
-                except Exception: pass
-            ai_agent_results[bot_name] = {"company": company, "ua_string": ua_string, "robots_allowed": allowed}
-    sensitive_results = {}
-    for path in SENSITIVE_PATHS:
-        full_path = base_url + path
-        exposed = True
-        if parser:
-            try: exposed = parser.can_fetch(BROWSER_UA, full_path)
-            except Exception: pass
-        sensitive_results[path] = {"accessible_per_robots": exposed, "mentioned_in_robots": path.lower() in raw.lower()}
-    blocked_resources = []
-    for ext_pattern in [".css", ".js", "/css/", "/js/", "/static/", "/assets/"]:
-        if parser:
-            try:
-                if not parser.can_fetch(BROWSER_UA, base_url + ext_pattern): blocked_resources.append(ext_pattern)
-            except Exception: pass
-    score = 50
-    ai_specific = sum(1 for name, r in ai_agent_results.items() if r["robots_allowed"] is not None)
-    if ai_specific > 3: score += 15
-    elif ai_specific > 0: score += 10
-    if sitemaps: score += 10
-    properly_blocked = sum(1 for p, r in sensitive_results.items() if not r["accessible_per_robots"])
-    if properly_blocked > len(SENSITIVE_PATHS) * 0.5: score += 10
-    elif properly_blocked > 0: score += 5
-    if not blocked_resources: score += 10
-    else: score -= 10
-    exposed_sensitive = sum(1 for p, r in sensitive_results.items() if r["accessible_per_robots"] and r["mentioned_in_robots"])
-    if exposed_sensitive > 3: score -= 10
-    return {"found": True, "url": robots_url, "raw": raw, "parser": parser, "sitemaps": sitemaps, "ai_agent_results": ai_agent_results, "sensitive_paths": sensitive_results, "blocked_resources": blocked_resources, "score": max(0, min(100, score))}
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PILLAR 4: SCHEMA (logic unchanged)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def flatten_schema_types(data, types_found=None):
-    if types_found is None: types_found = []
-    if isinstance(data, dict):
-        t = data.get("@type")
-        if t:
-            if isinstance(t, list): types_found.extend(t)
-            else: types_found.append(t)
-        for v in data.values(): flatten_schema_types(v, types_found)
-    elif isinstance(data, list):
-        for item in data: flatten_schema_types(item, types_found)
-    return types_found
-
-def validate_schema_fields(schema_type, data):
-    expected = SCHEMA_KEY_FIELDS.get(schema_type, [])
-    if not expected: return {"expected": [], "present": [], "missing": [], "completeness": 100}
-    present = [f for f in expected if f in data and data[f]]
-    missing = [f for f in expected if f not in data or not data[f]]
-    return {"expected": expected, "present": present, "missing": missing, "completeness": round(len(present) / len(expected) * 100) if expected else 100}
-
-def check_schema(url: str):
-    resp, err = fetch(url)
-    if err or resp is None or resp.status_code != 200:
-        return {"found": False, "error": err, "schemas": [], "types_found": [], "score": 0, "validations": [], "coverage": {}}
-    soup = BeautifulSoup(resp.text, "html.parser")
-    schemas = []; all_types = []
-    for script in soup.find_all("script", type="application/ld+json"):
-        try:
-            data = json.loads(script.string)
-            items = data if isinstance(data, list) else [data]
-            for item in items:
-                if "@graph" in item:
-                    for g in item["@graph"]:
-                        st_ = g.get("@type", "Unknown")
-                        if isinstance(st_, list): st_ = ", ".join(st_)
-                        schemas.append({"format": "JSON-LD", "type": st_, "data": g})
-                else:
-                    st_ = item.get("@type", "Unknown")
-                    if isinstance(st_, list): st_ = ", ".join(st_)
-                    schemas.append({"format": "JSON-LD", "type": st_, "data": item})
-            all_types.extend(flatten_schema_types(data))
-        except (json.JSONDecodeError, TypeError):
-            schemas.append({"format": "JSON-LD", "type": "Parse Error", "data": {}})
-    microdata = soup.find_all(attrs={"itemscope": True})
-    for item in microdata[:10]:
-        it = item.get("itemtype", "Unknown")
-        tn = it.split("/")[-1] if "/" in it else it
-        schemas.append({"format": "Microdata", "type": tn, "data": {}})
-        all_types.append(tn)
-    validations = []
-    for s in schemas:
-        if s["data"] and s["type"] != "Parse Error":
-            pt = s["type"].split(",")[0].strip()
-            v = validate_schema_fields(pt, s["data"]); v["type"] = s["type"]; validations.append(v)
-    type_set = set(all_types)
-    coverage = {}
-    for cat, exp_types in EXPECTED_SCHEMA_TYPES.items():
-        found = [t for t in exp_types if t in type_set]
-        coverage[cat] = {"expected": exp_types, "found": found, "missing": [t for t in exp_types if t not in type_set], "coverage_pct": round(len(found) / len(exp_types) * 100) if exp_types else 0}
-    score = 0
-    if schemas:
-        score = 30
-        avg_c = sum(v["completeness"] for v in validations) / len(validations) if validations else 50
-        score += round(avg_c * 0.3)
-        swc = coverage.get("site_wide", {}).get("coverage_pct", 0)
-        score += round(swc * 0.2)
-        if len(schemas) >= 3: score += 10
-        if any(s["type"] in ("Product", "Offer") for s in schemas): score += 10
-    return {"found": len(schemas) > 0, "schemas": schemas, "types_found": list(set(all_types)), "validations": validations, "coverage": coverage, "score": min(score, 100), "error": None}
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# LIVE BOT CRAWL (logic unchanged)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def crawl_as_bot(url, bot_name, ua_string, robots_parser):
-    try:
-        robots_allowed = True
-        if robots_parser:
-            try: robots_allowed = robots_parser.can_fetch(ua_string, url)
-            except Exception: robots_allowed = None
-        start = time.time()
-        resp = requests.get(url, headers={"User-Agent": ua_string}, timeout=20, allow_redirects=True)
-        load_time = time.time() - start
-        soup = BeautifulSoup(resp.text, "html.parser")
-        title = soup.find("title"); title_text = title.get_text(strip=True) if title else ""
-        robots_meta = ""; has_noindex = False
-        rt = soup.find("meta", attrs={"name": "robots"})
-        if rt: robots_meta = rt.get("content", ""); has_noindex = "noindex" in robots_meta.lower()
-        return {"bot_name": bot_name, "status_code": resp.status_code, "robots_allowed": robots_allowed, "robots_meta": robots_meta or "None", "has_noindex": has_noindex, "is_allowed": resp.status_code == 200 and robots_allowed and not has_noindex, "title": title_text, "load_time": round(load_time, 2), "content_length": len(soup.get_text(separator=" ", strip=True)), "error": None}
-    except Exception as e:
-        return {"bot_name": bot_name, "status_code": None, "robots_allowed": None, "robots_meta": "N/A", "has_noindex": False, "is_allowed": False, "title": "", "load_time": 0, "content_length": 0, "error": str(e)}
-
-def run_live_bot_crawl(url, robots_parser):
-    results = {}
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {}
-        for company, bots in AI_BOTS.items():
-            for bot_name, ua_string in bots.items():
-                f = executor.submit(crawl_as_bot, url, bot_name, ua_string, robots_parser)
-                futures[f] = (company, bot_name)
-        for future in as_completed(futures):
-            company, bot_name = futures[future]
-            result = future.result(); result["company"] = company; results[bot_name] = result
-    return results
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SEMANTIC HIERARCHY & OTHER CHECKS (replaces Supplementary)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def check_semantic_hierarchy(url: str):
-    """Check heading structure, semantic HTML, meta tags, and content structure."""
-    resp, err = fetch(url)
-    if err or resp is None or resp.status_code != 200:
-        return {"error": err or f"HTTP {resp.status_code if resp else '?'}"}
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    results = {"headings": [], "hierarchy_ok": True, "semantic_elements": {}, "meta_tags": [], "x_robots_tag": None, "nosnippet_elements": 0, "html_length": len(resp.text), "text_length": 0}
-
-    # Heading hierarchy
-    headings = soup.find_all(re.compile(r'^h[1-6]$'))
-    for h in headings:
-        results["headings"].append({"level": int(h.name[1]), "text": h.get_text(strip=True)[:120]})
-    levels = [int(h.name[1]) for h in headings]
-    for i in range(1, len(levels)):
-        if levels[i] > levels[i-1] + 1:
-            results["hierarchy_ok"] = False
-            break
-
-    # Semantic elements
-    for tag_name in ["article", "section", "nav", "aside", "main", "header", "footer", "figure", "time"]:
-        count = len(soup.find_all(tag_name))
-        if count: results["semantic_elements"][tag_name] = count
-
-    # Meta tags
-    for tag in soup.find_all("meta", attrs={"name": True}):
-        name = tag.get("name", "").lower()
-        content = tag.get("content", "")
-        if name in ("robots", "googlebot", "google-extended", "googlebot-news", "bingbot"):
-            results["meta_tags"].append({"name": name, "content": content})
-
-    results["x_robots_tag"] = resp.headers.get("X-Robots-Tag", None)
-    results["nosnippet_elements"] = len(soup.find_all(attrs={"data-nosnippet": True}))
-    results["text_length"] = len(soup.get_text(separator=" ", strip=True))
-
-    # Well-known AI files (checked once at site level)
-    return results
-
-
-def check_wellknown(base_url):
-    results = {}
-    for path in ["/.well-known/ai-plugin.json", "/.well-known/aip.json", "/.well-known/tdmrep.json"]:
-        url = urljoin(base_url, path)
-        resp, err = fetch(url, timeout=8)
-        if resp and resp.status_code == 200:
-            text = resp.text.strip()
-            if text and not text.startswith("<!DOCTYPE") and not text.startswith("<html"):
-                results[path] = {"found": True, "url": url, "content": text[:2000]}
-            else:
-                results[path] = {"found": False, "url": url}
-        else:
-            results[path] = {"found": False, "url": url}
-    return results
-
-
-def compute_overall(js_score, llm_score, robots_score, schema_score):
-    return round(js_score * 0.25 + llm_score * 0.15 + robots_score * 0.30 + schema_score * 0.30)
-
+# ─── AUDIT LOGIC: all imported from checks.py (single source of truth) ─────────
+from checks import (
+    AI_BOTS, BOT_TYPES, KEY_AI_BOTS, SENSITIVE_PATHS, ALL_SENSITIVE_PATHS,
+    CMS_PROFILES, SCHEMA_KEY_FIELDS, EXPECTED_SCHEMA_TYPES, AUTHORITATIVE_DOMAINS,
+    GRADE_THRESHOLDS, get_grade, ScoreBuilder, compute_overall,
+    fetch, normalise_url, extract_jsonld, flatten_schema_types, detect_cms,
+    fetch_js_rendered, analyse_html_content, detect_js_frameworks, compare_html_vs_js,
+    check_js_rendering, check_cloudflare_bot_protection, check_robots_crawlability,
+    run_live_bot_crawl, validate_schema_fields, check_schema_meta,
+    check_llm_discoverability, check_security_exposure,
+    pattern_brain_analysis, analyse_schema_quality, analyse_content_clarity, analyse_entity_coherence,
+)
 
 def generate_report_text(domain, overall, pillar_scores, url_labels, js_results, llm_result, robots_result, schema_results, bot_crawl_results, recs):
     """Generate a plain-text audit report for PDF/download."""
@@ -1060,50 +499,125 @@ if run_audit:
         if u and u.strip():
             url_labels[normalise_url(u.strip())] = name
 
-    progress = st.progress(0, text="Starting audit…")
+    # ── ESTIMATED TIME BREAKDOWN ──────────────────────────────────────────
+    n_pages = len(all_test_urls)
+    has_js_api = any(get_secret(k, "") for k in ["SCRAPINGBEE_API_KEY", "SCRAPFLY_API_KEY", "BROWSERLESS_API_KEY"])
+    has_bifrost = bool(get_secret("BIFROST_API_KEY", ""))
+
+    # Per-step timing estimates (seconds)
+    t_js        = n_pages * (18 if has_js_api else 5)   # JS render is slow if API key present
+    t_robots    = 35   # robots + Cloudflare live bot tests (16 bots × ~2s)
+    t_schema    = n_pages * 4
+    t_llm       = 15   # llm.txt paths + AI info page checks
+    t_security  = 25   # sensitive path crawls (4 categories × ~3-4 paths each)
+    t_botcrawl  = 30 if run_bot_crawl else 0
+    t_brain     = 20 if has_bifrost else 0
+    total_est   = t_js + t_robots + t_schema + t_llm + t_security + t_botcrawl + t_brain
+    total_min   = total_est // 60
+    total_sec   = total_est % 60
+    time_label  = f"{total_min}m {total_sec}s" if total_min > 0 else f"~{total_sec}s"
+
+    # Show the timing breakdown card
+    js_label       = f"~{t_js}s {'(JS render API active)' if has_js_api else '(HTML-only, add render API key for full comparison)'}"
+    robots_label   = f"~{t_robots}s (robots.txt + 16 live bot crawl tests + Cloudflare check)"
+    schema_label   = f"~{t_schema}s ({n_pages} pages × schema + entity)"
+    llm_label      = f"~{t_llm}s (llm.txt variants + AI info page detection + well-known files)"
+    security_label = f"~{t_security}s (critical / backend / customer / HTML exposure checks)"
+    botcrawl_label = f"~{t_botcrawl}s (sending requests as 16 AI bots)" if run_bot_crawl else "Skipped"
+    brain_label    = f"~{t_brain}s (4 AI analysis calls via Bifrost)" if has_bifrost else "Skipped (add BIFROST_API_KEY to enable)"
+
+    st.markdown(f"""
+<div style="background:{BRAND['bg_card']};border:1px solid {BRAND['border']};border-radius:12px;padding:16px 20px;margin-bottom:16px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+    <span style="font-weight:700;color:{BRAND['white']};font-size:15px;">⏱ Estimated Audit Time: {time_label}</span>
+    <span style="color:{BRAND['text_secondary']};font-size:12px;">{n_pages} pages · {'JS render API active' if has_js_api else 'HTML-only mode'}</span>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 20px;">
+    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['primary']};font-weight:600;">P1 JS Rendering</span> &nbsp;{js_label}</div>
+    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['primary']};font-weight:600;">P2 Robots & Crawl</span> &nbsp;{robots_label}</div>
+    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['primary']};font-weight:600;">P3 Schema & Entity</span> &nbsp;{schema_label}</div>
+    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['primary']};font-weight:600;">P4 AI Discoverability</span> &nbsp;{llm_label}</div>
+    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['warning']};font-weight:600;">Security Check</span> &nbsp;{security_label}</div>
+    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['teal']};font-weight:600;">Live Bot Crawl</span> &nbsp;{botcrawl_label}</div>
+    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['purple']};font-weight:600;">Pattern Brain</span> &nbsp;{brain_label}</div>
+  </div>
+  <div style="margin-top:10px;padding-top:10px;border-top:1px solid {BRAND['border']};color:{BRAND['text_secondary']};font-size:11px;">
+    ℹ️ The audit makes live HTTP requests to your site as each AI bot. Do not close this tab.
+    {'Longer because JS rendering API is active — each page is loaded twice for full comparison.' if has_js_api else ''}
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+    audit_start = time.time()
+    progress = st.progress(0, text=f"Starting audit — estimated {time_label}…")
 
     # ── PILLAR 1: JS RENDERING (all pages) ────────────────────────────────
-    progress.progress(5, text="Pillar 1/4 — JavaScript Rendering Assessment…")
+    progress.progress(3, text=f"[1/6] JS Rendering — checking {n_pages} pages… (est. {js_label.split('(')[0].strip()})")
     js_results = {}
-    for test_url in all_test_urls:
-        js_results[test_url] = check_js_rendering(test_url)
+    for i, test_url in enumerate(all_test_urls):
+        elapsed = round(time.time() - audit_start)
+        label = url_labels.get(test_url, test_url)
+        progress.progress(3 + round(14 * (i / n_pages)),
+            text=f"[1/6] JS Rendering — {label} ({i+1}/{n_pages}) · {elapsed}s elapsed")
+        js_results[test_url] = check_js_rendering(test_url, get_secret)
     js_score = round(sum(r.get("score", 0) for r in js_results.values()) / len(js_results))
 
-    # ── PILLAR 2: LLM.TXT (site-level) ───────────────────────────────────
-    progress.progress(20, text="Pillar 2/4 — LLM.txt Discovery…")
-    llm_result = check_llm_txt(base_url)
-    llm_score = llm_result["score"]
+    # ── PILLAR 2: ROBOTS & CRAWLABILITY (site-level) ──────────────────────
+    elapsed = round(time.time() - audit_start)
+    progress.progress(18, text=f"[2/6] Robots & Crawlability — fetching robots.txt + Cloudflare check… · {elapsed}s elapsed")
+    homepage_resp, _ = fetch(url)
+    homepage_html = homepage_resp.text if homepage_resp else ""
+    progress.progress(20, text=f"[2/6] Robots & Crawlability — running 16 live bot crawl tests… · {elapsed}s elapsed")
+    robots_result = check_robots_crawlability(base_url, homepage_html)
+    robots_score = robots_result.get("score", 0)
 
-    # ── PILLAR 3: ROBOTS.TXT (site-level) ─────────────────────────────────
-    progress.progress(35, text="Pillar 3/4 — Robots.txt & Crawler Access…")
-    robots_result = check_robots(base_url)
-    robots_score = robots_result["score"]
-
-    # ── PILLAR 4: SCHEMA (all pages — page-level) ─────────────────────────
-    progress.progress(50, text="Pillar 4/4 — Schema Structured Data (per page)…")
+    # ── PILLAR 3: SCHEMA & ENTITY (all pages) ─────────────────────────────
     schema_results = {}
-    for test_url in all_test_urls:
-        schema_results[test_url] = check_schema(test_url)
+    for i, test_url in enumerate(all_test_urls):
+        elapsed = round(time.time() - audit_start)
+        label = url_labels.get(test_url, test_url)
+        progress.progress(38 + round(14 * (i / n_pages)),
+            text=f"[3/6] Schema & Entity — {label} ({i+1}/{n_pages}) · {elapsed}s elapsed")
+        schema_results[test_url] = check_schema_meta(test_url)
     schema_score = round(sum(r.get("score", 0) for r in schema_results.values()) / len(schema_results))
 
-    # ── SEMANTIC HIERARCHY (all pages) ────────────────────────────────────
-    progress.progress(65, text="Checking Semantic Hierarchy & Structure…")
-    semantic_results = {}
-    for test_url in all_test_urls:
-        semantic_results[test_url] = check_semantic_hierarchy(test_url)
-    wellknown_result = check_wellknown(base_url)
+    # ── PILLAR 4: AI DISCOVERABILITY (site-level) ──────────────────────────
+    elapsed = round(time.time() - audit_start)
+    progress.progress(55, text=f"[4/6] AI Discoverability — llm.txt, AI info page, well-known files… · {elapsed}s elapsed")
+    llm_result = check_llm_discoverability(base_url, homepage_html)
+    llm_score = llm_result.get("score", 0)
+
+    # ── SECURITY CHECK (separate score) ───────────────────────────────────
+    elapsed = round(time.time() - audit_start)
+    progress.progress(67, text=f"[5/6] Security Check — probing sensitive paths as AI bots… · {elapsed}s elapsed (this step takes ~{t_security}s)")
+    security_result = check_security_exposure(
+        base_url,
+        robots_raw=robots_result.get("raw", ""),
+        homepage_html=homepage_html,
+    )
+    security_score = security_result.get("score", 100)
 
     # ── LIVE BOT CRAWL (homepage) ─────────────────────────────────────────
     bot_crawl_results = {}
     if run_bot_crawl:
-        progress.progress(80, text="Live Bot Crawl — Testing as each AI agent…")
+        elapsed = round(time.time() - audit_start)
+        progress.progress(80, text=f"[6/6] Live Bot Crawl — sending requests as 16 AI bots… · {elapsed}s elapsed (~{t_botcrawl}s remaining)")
         bot_crawl_results = run_live_bot_crawl(url, robots_result.get("parser"))
 
-    progress.progress(95, text="Generating report…")
-    overall = compute_overall(js_score, llm_score, robots_score, schema_score)
+    # ── FINAL SCORING ─────────────────────────────────────────────────────
+    elapsed = round(time.time() - audit_start)
+    progress.progress(93, text=f"Calculating scores and grades… · {elapsed}s elapsed")
+    overall_result = compute_overall(
+        {"js": js_score, "robots": robots_score, "schema": schema_score, "llm": llm_score},
+        robots_missing=not robots_result.get("found", False),
+    )
+    overall = overall_result["score"]
+    overall_grade = overall_result["grade"]
+
+    total_elapsed = round(time.time() - audit_start)
     time.sleep(0.3)
-    progress.progress(100, text="Audit complete!")
-    time.sleep(0.4)
+    progress.progress(100, text=f"Audit complete in {total_elapsed}s!")
+    time.sleep(0.5)
     progress.empty()
 
     # ══════════════════════════════════════════════════════════════════════
@@ -1464,43 +978,147 @@ if run_audit:
     st.markdown("### Priority Recommendations")
 
     recs = []
+
+    # ── BAISOM L1: Cloudflare (CRITICAL — silent AI blocker) ──────────────────
+    cf_result = robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}
+    if cf_result.get("bot_fight_mode_likely"):
+        blocked = cf_result.get("blocked_bots", [])
+        recs.append(("danger", "Cloudflare", f"Bot Fight Mode is blocking key AI crawlers: {', '.join(blocked)}. Disable it or allowlist AI user-agents in Cloudflare dashboard. This overrides your robots.txt."))
+    elif cf_result.get("cloudflare_detected") and cf_result.get("blocked_bots"):
+        recs.append(("warning", "Cloudflare", f"Cloudflare is blocking some AI bots ({', '.join(cf_result['blocked_bots'])}). Review Bot Fight Mode settings."))
+
+    # ── JS Rendering ──────────────────────────────────────────────────────────
     if js_score < 60:
-        recs.append(("danger", "JS Rendering", "Critical content may be invisible to AI crawlers. Implement server-side rendering (SSR) for key product and marketing pages."))
+        recs.append(("danger", "JS Rendering", "Critical content is invisible to AI crawlers. Implement server-side rendering (SSR) for product pages, prices, and navigation — especially for Shopify/Next.js sites."))
     elif js_score < 80:
-        recs.append(("warning", "JS Rendering", "Some content may require JavaScript. Review product pages to ensure prices, specs, and pagination are in raw HTML."))
+        recs.append(("warning", "JS Rendering", "Some content requires JavaScript. Ensure prices, specs, and pagination are in raw HTML. Check for lazy-loaded images lacking width/height attributes (causes agent screenshot instability)."))
+
+    # ── AI Discoverability ────────────────────────────────────────────────────
     if llm_score == 0:
-        recs.append(("warning", "LLM.txt", "Create an llm.txt file to give AI agents a curated summary of your site, key pages, and content priorities."))
-    if not robots_result["found"]:
-        recs.append(("danger", "Robots.txt", "Create a robots.txt file — the foundational control for managing all crawler access."))
-    else:
-        if not robots_result["sitemaps"]:
-            recs.append(("warning", "Robots.txt", "Add sitemap references so AI crawlers can discover important pages."))
-        if robots_result["blocked_resources"]:
-            recs.append(("danger", "Robots.txt", f"CSS/JS blocked ({', '.join(robots_result['blocked_resources'])}). This prevents AI agents from rendering pages."))
-        exposed = [(p, r) for p, r in robots_result["sensitive_paths"].items() if r["accessible_per_robots"]]
-        critical = [p for p, r in exposed if any(x in p for x in ["/admin", "/api", "/.env", "/config", "/database"])]
-        if critical:
-            recs.append(("danger", "Security", f"Sensitive paths exposed: {', '.join(critical[:5])}. Add Disallow rules or gate these paths."))
+        recs.append(("warning", "AI Discoverability", "No AI guidance files found. Quick win: create an /ai-info page describing your brand and key products for AI agents. Also create a basic llm.txt pointing to your key pages."))
+    elif llm_score < 40:
+        recs.append(("warning", "AI Discoverability", "llm.txt or AI Info Page found but incomplete. Add a title, description, and links to key product/category pages to maximise AI agent guidance."))
+
+    # ── Robots & Crawlability ─────────────────────────────────────────────────
+    if isinstance(robots_result, dict):
+        if not robots_result.get("found"):
+            recs.append(("danger", "Robots.txt", "No robots.txt found — the foundational control for all crawler access. Create one immediately that explicitly allows GPTBot, ClaudeBot, and PerplexityBot."))
+        else:
+            if not robots_result.get("sitemaps"):
+                recs.append(("warning", "Robots.txt", "No sitemap referenced in robots.txt. Add 'Sitemap: https://yourdomain.com/sitemap.xml' so AI crawlers can discover all pages."))
+            if robots_result.get("blocked_resources"):
+                recs.append(("danger", "Robots.txt", f"CSS/JS blocked in robots.txt: {', '.join(robots_result['blocked_resources'][:3])}. This prevents AI from understanding page structure — remove these Disallow rules."))
+            ai_r = robots_result.get("ai_agent_results", robots_result.get("ai_results", {}))
+            explicitly_blocked = [n for n, r in ai_r.items()
+                                  if r.get("allowed") is False and n in ["GPTBot", "ClaudeBot", "PerplexityBot", "ChatGPT-User"]]
+            if explicitly_blocked:
+                recs.append(("danger", "Robots.txt", f"AI crawlers explicitly blocked: {', '.join(explicitly_blocked)}. Add Allow rules for these bots to restore AI visibility."))
+            sensitive = robots_result.get("sensitive_paths", robots_result.get("sensitive", {}))
+            critical_exposed = [p for p, r in sensitive.items()
+                                if r.get("accessible_per_robots", r.get("exposed", False))
+                                and any(x in p for x in ["/admin", "/api", "/.env", "/config", "/database"])]
+            if critical_exposed:
+                recs.append(("danger", "Security", f"Critical paths exposed: {', '.join(critical_exposed[:4])}. Add Disallow rules immediately."))
+
+    # ── Schema ────────────────────────────────────────────────────────────────
     if schema_score < 30:
-        recs.append(("danger", "Schema", "Add JSON-LD schema: Organisation, WebSite, BreadcrumbList site-wide. Product/Offer/Brand on product pages."))
+        recs.append(("danger", "Schema", "Add JSON-LD schema: Organisation + WebSite + BreadcrumbList site-wide. Product + Offer + AggregateRating on product pages. This is your highest-leverage AI visibility action."))
     elif schema_score < 60:
         all_missing = []
         for sr in schema_results.values():
             for v in sr.get("validations", []):
                 all_missing.extend(v.get("missing", []))
-        if all_missing:
-            recs.append(("warning", "Schema", f"Incomplete fields: {', '.join(list(set(all_missing))[:8])}. Complete these for accurate AI extraction."))
+        missing_set = list(set(all_missing))
+        if missing_set:
+            recs.append(("warning", "Schema", f"Incomplete schema fields: {', '.join(missing_set[:8])}. Priority: add GTIN/MPN to products, sameAs to Organisation, and hasMerchantReturnPolicy to Offers."))
+
+    # ── Ecommerce-specific schema gaps ────────────────────────────────────────
+    for sr in schema_results.values():
+        ecomm = sr.get("ecommerce", {})
+        if ecomm.get("is_product_page") and not ecomm.get("has_gtin_or_mpn"):
+            recs.append(("warning", "Product Schema", "Product pages lack GTIN/MPN identifiers. Research shows 60% of catalogs missing GTINs are downgraded or excluded by AI shopping agents. Add gtin13 or mpn to all Product schema."))
+            break
+    for sr in schema_results.values():
+        ecomm = sr.get("ecommerce", {})
+        if ecomm.get("is_product_page") and not ecomm.get("has_return_policy_schema"):
+            recs.append(("warning", "Product Schema", "No MerchantReturnPolicy schema on product pages. AI agents actively parse return policies when building shopping recommendations — this is a trust signal."))
+            break
+
+    # ── Organisation sameAs ───────────────────────────────────────────────────
+    no_sameas = all(not sr.get("entity", {}).get("has_org_sameas") for sr in schema_results.values() if sr.get("entity"))
+    if schema_results and no_sameas:
+        recs.append(("warning", "Brand Entity", "Organisation schema lacks sameAs links. Add LinkedIn, Wikipedia, and social profile URLs to your Organisation schema to establish consistent brand entity across AI knowledge graphs."))
+
+    # ── Content Architecture ──────────────────────────────────────────────────
+    if not recs or len(recs) < 5:
+        # Only add content rec if not already overloaded
+        no_lead_para = all(not sr.get("content_architecture", {}).get("has_lead_paragraph")
+                           for sr in schema_results.values() if sr.get("content_architecture"))
+        if no_lead_para and schema_results:
+            recs.append(("warning", "Content Architecture", "No answer-first summary paragraph detected. Per BAISOM Layer 4: add a concise 40–60 word summary at the top of key pages. AI reads top-down and decides in milliseconds."))
 
     if not recs:
-        st.markdown(brand_status("Excellent! Your site scores well across all four pillars.", "success"), unsafe_allow_html=True)
+        st.markdown(brand_status("Excellent! Your site scores well across all pillars.", "success"), unsafe_allow_html=True)
     else:
         seen = set()
         for status, pillar, text in recs:
-            key = f"{pillar}:{text}"
+            key = f"{pillar}:{text[:60]}"
             if key in seen: continue
             seen.add(key)
             color = BRAND["danger"] if status == "danger" else BRAND["warning"]
             st.markdown(f'<div style="background:{BRAND["bg_card"]};border-left:3px solid {color};border-radius:0 10px 10px 0;padding:14px 18px;margin:6px 0;"><div style="margin-bottom:6px;">{brand_pill(pillar, color)}</div><div style="color:{BRAND["white"]};font-size:14px;">{text}</div></div>', unsafe_allow_html=True)
+
+    # ── PATTERN BRAIN AI ANALYSIS ─────────────────────────────────────────────
+    bifrost_key = get_secret("BIFROST_API_KEY", "")
+    if bifrost_key:
+        st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
+        st.markdown(f'### {brand_pill("PATTERN BRAIN", BRAND["purple"])} AI Analysis')
+        st.caption("Powered by Pattern's AI via Bifrost · openai/gpt-4o-mini")
+
+        with st.spinner("Generating Pattern Brain analysis..."):
+            from checks import pattern_brain_analysis
+
+            # Build compact results dict for the brain
+            all_results_for_brain = {
+                "robots": robots_result if isinstance(robots_result, dict) else {},
+                "cloudflare": (robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}),
+                "schema_summary": {
+                    "types_found": [t for sr in schema_results.values() for t in sr.get("types_found", [])],
+                    "has_org_sameas": any(sr.get("entity", {}).get("has_org_sameas") for sr in schema_results.values()),
+                    "has_author": any(sr.get("entity", {}).get("has_author") for sr in schema_results.values()),
+                    "has_date_published": any(sr.get("entity", {}).get("has_date_published") for sr in schema_results.values()),
+                },
+                "ecommerce_summary": {
+                    "has_gtin": any(sr.get("ecommerce", {}).get("has_gtin_or_mpn") for sr in schema_results.values()),
+                    "has_return_policy": any(sr.get("ecommerce", {}).get("has_return_policy_schema") for sr in schema_results.values()),
+                },
+                "llm_discoverability": {
+                    "has_llm_txt": llm_result.get("score", 0) > 25,
+                    "ai_info_found": bool(llm_result.get("ai_info_page", {}).get("found")),
+                    "has_ucp": bool(llm_result.get("wellknown", {}).get("has_ucp")),
+                    "has_mcp": bool(llm_result.get("wellknown", {}).get("has_mcp")),
+                },
+                "semantic_summary": {
+                    "has_lead_paragraph": False,
+                    "cluster_count": 0,
+                    "auth_citations": 0,
+                    "vague_phrases": 0,
+                },
+                "pillar_scores": {
+                    "overall": overall,
+                    "js": js_score,
+                    "robots": robots_score,
+                    "schema": schema_score,
+                    "llm": llm_score,
+                },
+            }
+
+            brain_analysis = pattern_brain_analysis(parsed.netloc, all_results_for_brain, get_secret)
+
+        if brain_analysis:
+            st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:12px;padding:20px 24px;margin:8px 0;"><div style="color:{BRAND["white"]};font-size:14px;line-height:1.7;white-space:pre-wrap;">{brain_analysis}</div></div>', unsafe_allow_html=True)
+        else:
+            st.caption("Pattern Brain analysis unavailable — check BIFROST_API_KEY in Streamlit secrets.")
 
     # ── DOWNLOAD REPORT ──────────────────────────────────────────────────
     st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
