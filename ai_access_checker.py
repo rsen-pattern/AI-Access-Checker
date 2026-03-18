@@ -273,6 +273,36 @@ from checks import (
     ai_analyse_js_gap,
 )
 
+def check_semantic_hierarchy(url):
+    """Check heading structure, semantic elements, meta directives per page."""
+    resp, err = fetch(url)
+    if err or not resp or resp.status_code != 200:
+        return {"error": err or f"HTTP {resp.status_code if resp else '?'}"}
+    from bs4 import BeautifulSoup
+    import re as _re
+    soup = BeautifulSoup(resp.text, "html.parser")
+    results = {"headings": [], "hierarchy_ok": True, "semantic_elements": {},
+               "meta_tags": [], "x_robots_tag": None, "nosnippet_elements": 0,
+               "html_length": len(resp.text), "text_length": 0}
+    headings = soup.find_all(_re.compile(r'^h[1-6]$'))
+    for h in headings:
+        results["headings"].append({"level": int(h.name[1]), "text": h.get_text(strip=True)[:120]})
+    levels = [int(h.name[1]) for h in headings]
+    for i in range(1, len(levels)):
+        if levels[i] > levels[i-1] + 1:
+            results["hierarchy_ok"] = False; break
+    for tag in ["article", "section", "nav", "aside", "main", "header", "footer", "figure", "time"]:
+        c = len(soup.find_all(tag))
+        if c: results["semantic_elements"][tag] = c
+    for tag in soup.find_all("meta", attrs={"name": True}):
+        name = tag.get("name", "").lower()
+        if name in ("robots", "googlebot", "google-extended"):
+            results["meta_tags"].append({"name": name, "content": tag.get("content", "")})
+    results["x_robots_tag"] = resp.headers.get("X-Robots-Tag")
+    results["nosnippet_elements"] = len(soup.find_all(attrs={"data-nosnippet": True}))
+    results["text_length"] = len(soup.get_text(separator=" ", strip=True))
+    return results
+
 def generate_report_text(domain, overall, pillar_scores, url_labels, js_results, llm_result, robots_result, schema_results, bot_crawl_results, recs):
     """Generate a plain-text audit report for PDF/download."""
     lines = []
@@ -336,7 +366,7 @@ def generate_report_text(domain, overall, pillar_scores, url_labels, js_results,
     # Pillar 2: LLM.txt
     lines.append("PILLAR 2 — LLM.TXT [SITE-LEVEL]")
     lines.append("-" * 40)
-    for path, info in llm_result["files"].items():
+    for path, info in llm_result.get("llm_txt", llm_result.get("files", {})).items():
         status = "✓ Found" if info["found"] else "✗ Not found"
         lines.append(f"  {path}: {status}")
     lines.append("")
@@ -351,7 +381,7 @@ def generate_report_text(domain, overall, pillar_scores, url_labels, js_results,
         exposed = sum(1 for p, r in robots_result["sensitive_paths"].items() if not r.get("blocked", not r.get("accessible_per_robots", False)))
         lines.append(f"  Sensitive paths exposed: {exposed}/{len(robots_result['sensitive_paths'])}")
         lines.append("  AI Agent Access:")
-        for bn, info in robots_result["ai_agent_results"].items():
+        for bn, info in robots_result.get("ai_agent_results", robots_result.get("ai_results", {})).items():
             status = "Allowed" if info["robots_allowed"] else "Blocked" if info["robots_allowed"] is False else "Unknown"
             lines.append(f"    {bn}: {status}")
     else:
@@ -366,12 +396,18 @@ def generate_report_text(domain, overall, pillar_scores, url_labels, js_results,
         if sr.get("error"):
             lines.append(f"  {label}: ERROR")
             continue
-        lines.append(f"  {label}: {sr['score']}/100 — {len(sr['schemas'])} schema item(s)")
-        if sr["types_found"]:
-            lines.append(f"    Types: {', '.join(sr['types_found'])}")
-        for v in sr.get("validations", []):
-            if v["missing"]:
-                lines.append(f"    {v['type']}: {v['completeness']}% — Missing: {', '.join(v['missing'])}")
+        schema_data = sr.get("schema", {})
+        schemas = schema_data.get("schemas", [])
+        types = schema_data.get("types", [])
+        validations = schema_data.get("validations", [])
+        grade = sr.get("grade", {})
+        grade_letter = grade.get("letter", "?") if isinstance(grade, dict) else "?"
+        lines.append(f"  {label}: {sr.get('score', 0)}/100 ({grade_letter}) — {len(schemas)} schema item(s)")
+        if types:
+            lines.append(f"    Types: {', '.join(types)}")
+        for v in validations:
+            if v.get("missing"):
+                lines.append(f"    {v.get('type','?')}: {v.get('completeness',0)}% — Missing: {', '.join(v['missing'])}")
     lines.append("")
 
     # Bot crawl
@@ -584,13 +620,20 @@ if run_audit:
 
     # ── PILLAR 4: AI DISCOVERABILITY (site-level) ──────────────────────────
     elapsed = round(time.time() - audit_start)
-    progress.progress(55, text=f"[4/6] AI Discoverability — llm.txt, AI info page, well-known files… · {elapsed}s elapsed")
+    progress.progress(55, text=f"[4/7] AI Discoverability — llm.txt, AI info page, well-known files… · {elapsed}s elapsed")
     llm_result = check_llm_discoverability(base_url, homepage_html)
     llm_score = llm_result.get("score", 0)
 
+    # ── SEMANTIC HIERARCHY (all pages) ────────────────────────────────────
+    elapsed = round(time.time() - audit_start)
+    progress.progress(62, text=f"[5/7] Semantic Hierarchy — checking heading structure… · {elapsed}s elapsed")
+    semantic_results = {}
+    for test_url in all_test_urls:
+        semantic_results[test_url] = check_semantic_hierarchy(test_url)
+
     # ── SECURITY CHECK (separate score) ───────────────────────────────────
     elapsed = round(time.time() - audit_start)
-    progress.progress(67, text=f"[5/6] Security Check — probing sensitive paths as AI bots… · {elapsed}s elapsed (this step takes ~{t_security}s)")
+    progress.progress(67, text=f"[6/7] Security Check — probing sensitive paths as AI bots… · {elapsed}s elapsed (this step takes ~{t_security}s)")
     security_result = check_security_exposure(
         base_url,
         robots_raw=robots_result.get("raw", ""),
@@ -602,7 +645,7 @@ if run_audit:
     bot_crawl_results = {}
     if run_bot_crawl:
         elapsed = round(time.time() - audit_start)
-        progress.progress(80, text=f"[6/6] Live Bot Crawl — sending requests as 16 AI bots… · {elapsed}s elapsed (~{t_botcrawl}s remaining)")
+        progress.progress(80, text=f"[7/7] Live Bot Crawl — sending requests as 16 AI bots… · {elapsed}s elapsed (~{t_botcrawl}s remaining)")
         bot_crawl_results = run_live_bot_crawl(url, robots_result.get("parser"))
 
     # ── FINAL SCORING ─────────────────────────────────────────────────────
@@ -637,20 +680,27 @@ if run_audit:
         st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};text-align:center;margin-top:4px;">{parsed.netloc}</div>', unsafe_allow_html=True)
 
     with col_pillars:
+        overall_grade = overall_result.get("grade", {})
+        grade_letter = overall_grade.get("letter", "?") if isinstance(overall_grade, dict) else "?"
+        grade_label = overall_grade.get("label", "") if isinstance(overall_grade, dict) else ""
+
         pillar_items = [
             ("JS Rendering", js_score),
-            ("LLM.txt", llm_score),
-            ("Robots.txt", robots_score),
-            ("Schema", schema_score),
+            ("Robots & Crawl", robots_score),
+            ("Schema & Entity", schema_score),
+            ("AI Discovery", llm_score),
         ]
-        p_cols = st.columns(4)
+        p_cols = st.columns(5)
         for i, (label, sc) in enumerate(pillar_items):
             color = BRAND["teal"] if sc >= 75 else BRAND["primary"] if sc >= 50 else BRAND["warning"] if sc >= 35 else BRAND["danger"]
-            p_cols[i].markdown(f'<div class="p-score-card"><div class="p-score-num" style="color:{color};">{sc}<span style="font-size:14px;opacity:0.4;">%</span></div><div class="p-score-label">{label}</div></div>', unsafe_allow_html=True)
+            p_cols[i].markdown(f'<div class="p-score-card"><div class="p-score-num" style="color:{color};font-size:1.6rem;">{sc}<span style="font-size:12px;opacity:0.4;">%</span></div><div class="p-score-label" style="font-size:0.6rem;">{label}</div></div>', unsafe_allow_html=True)
+        # Security as separate card
+        sec_color = BRAND["teal"] if security_score >= 80 else BRAND["warning"] if security_score >= 50 else BRAND["danger"]
+        p_cols[4].markdown(f'<div class="p-score-card" style="border-color:{sec_color}40;"><div class="p-score-num" style="color:{sec_color};font-size:1.6rem;">{security_score}<span style="font-size:12px;opacity:0.4;">%</span></div><div class="p-score-label" style="font-size:0.6rem;">Security</div></div>', unsafe_allow_html=True)
 
         # Summary row
         st.markdown("")
-        sub_cols = st.columns(3)
+        sub_cols = st.columns(4)
         with sub_cols[0]:
             st.metric("Pages Tested", len(all_test_urls))
         with sub_cols[1]:
@@ -660,9 +710,11 @@ if run_audit:
         with sub_cols[2]:
             exposed_count = sum(1 for p, r in robots_result.get("sensitive_paths", {}).items() if not r.get("blocked", not r.get("accessible_per_robots", False)))
             st.metric("Paths Exposed", exposed_count)
+        with sub_cols[3]:
+            st.metric("Overall Grade", f"{grade_letter} ({grade_label})")
 
     # ── STRONGEST / WEAKEST PILLAR ────────────────────────────────────────
-    pillar_scores = {"JS Rendering": js_score, "LLM.txt": llm_score, "Robots.txt": robots_score, "Schema": schema_score}
+    pillar_scores = {"JS Rendering": js_score, "Robots & Crawlability": robots_score, "Schema & Entity": schema_score, "AI Discoverability": llm_score}
     sorted_pillars = sorted(pillar_scores.items(), key=lambda x: x[1])
     weakest_name, weakest_sc = sorted_pillars[0]
     strongest_name, strongest_sc = sorted_pillars[-1]
@@ -778,39 +830,10 @@ if run_audit:
                     st.markdown(brand_status(f"Text: {c['text_content_length']:,} chars", "success" if c["text_content_length"] > 500 else "warning"), unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════════════
-    # PILLAR 2: LLM.TXT
+    # PILLAR 2: ROBOTS & CRAWLABILITY
     # ══════════════════════════════════════════════════════════════════════
     st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
-    st.markdown(pillar_header(2, "LLM.txt Discovery", llm_score), unsafe_allow_html=True)
-    st.markdown(f'{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">Checked once at domain root</span>', unsafe_allow_html=True)
-    st.markdown(brand_score_bar(llm_score), unsafe_allow_html=True)
-    pillar_explainer("llm_txt")
-
-    any_llm = any(v["found"] for v in llm_result["files"].values())
-    if any_llm:
-        for path, info in llm_result["files"].items():
-            if info["found"]:
-                st.markdown(brand_status(f"Found: {path}", "success"), unsafe_allow_html=True)
-                q = info.get("quality", {})
-                if q:
-                    cols = st.columns(4)
-                    cols[0].metric("Lines", q.get("line_count", "—"))
-                    cols[1].metric("Chars", q.get("char_count", "—"))
-                    cols[2].metric("Links", "Yes" if q.get("has_links") else "No")
-                    cols[3].metric("Sections", "Yes" if q.get("has_sections") else "No")
-                with st.expander(f"View contents of {path}"):
-                    st.code(info["content"], language="markdown")
-            else:
-                st.caption(f"— {path} not found")
-    else:
-        st.markdown(brand_status("No llm.txt files found", "warning"), unsafe_allow_html=True)
-        st.info("💡 **llm.txt** is an emerging standard providing direct guidance to AI bots on what to prioritise. [Learn more →](https://llmstxt.org)")
-
-    # ══════════════════════════════════════════════════════════════════════
-    # PILLAR 3: ROBOTS.TXT
-    # ══════════════════════════════════════════════════════════════════════
-    st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
-    st.markdown(pillar_header(3, "Robots.txt & Crawler Access", robots_score), unsafe_allow_html=True)
+    st.markdown(pillar_header(2, "Robots.txt & Crawler Access", robots_score), unsafe_allow_html=True)
     st.markdown(f'{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">Checked once — controls all crawler access</span>', unsafe_allow_html=True)
     st.markdown(brand_score_bar(robots_score), unsafe_allow_html=True)
     pillar_explainer("robots_txt")
@@ -819,7 +842,7 @@ if run_audit:
         st.markdown(brand_status(f"robots.txt found at {robots_result['url']}", "success"), unsafe_allow_html=True)
         st.markdown(f"**AI Agent Access:**")
         for company in AI_BOTS:
-            company_bots = {k: v for k, v in robots_result["ai_agent_results"].items() if v["company"] == company}
+            company_bots = {k: v for k, v in robots_result.get("ai_agent_results", robots_result.get("ai_results", {})).items() if v["company"] == company}
             if company_bots:
                 with st.expander(f"{company} ({len(company_bots)} agents)"):
                     for bot_name, info in company_bots.items():
@@ -856,10 +879,10 @@ if run_audit:
         st.markdown(brand_status(f"No robots.txt found at {robots_result['url']}", "danger"), unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════════════
-    # PILLAR 4: SCHEMA (page-level)
+    # PILLAR 3: SCHEMA & ENTITY (page-level)
     # ══════════════════════════════════════════════════════════════════════
     st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
-    st.markdown(pillar_header(4, "Schema — Structured Data", schema_score), unsafe_allow_html=True)
+    st.markdown(pillar_header(3, "Schema & Entity", schema_score), unsafe_allow_html=True)
     st.markdown(f'{brand_pill("PAGE-LEVEL", BRAND["primary"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">Checked on each of your {len(all_test_urls)} pages</span>', unsafe_allow_html=True)
     st.markdown(brand_score_bar(schema_score), unsafe_allow_html=True)
     pillar_explainer("schema")
@@ -869,29 +892,140 @@ if run_audit:
         if sr.get("error"):
             st.error(f"Could not check {label}: {sr['error']}")
             continue
-        with st.expander(f"{label} — {len(sr['schemas'])} schema item(s), Score: {sr['score']}/100"):
-            if sr["found"]:
-                pills = " ".join(brand_pill(t, BRAND["chart"][i % len(BRAND["chart"])]) for i, t in enumerate(sr["types_found"]))
+
+        schema_data = sr.get("schema", {})
+        meta_data = sr.get("meta", {})
+        entity_data = sr.get("entity", {})
+        schemas = schema_data.get("schemas", [])
+        types_found = schema_data.get("types", [])
+        validations = schema_data.get("validations", [])
+        grade = sr.get("grade", {})
+        grade_letter = grade.get("letter", "?") if isinstance(grade, dict) else "?"
+
+        with st.expander(f"{label} — {len(schemas)} schema item(s), Score: {sr.get('score', 0)}/100 ({grade_letter})"):
+            # Schema types as pills
+            if types_found:
+                pills = " ".join(brand_pill(t, BRAND["chart"][i % len(BRAND["chart"])]) for i, t in enumerate(types_found))
                 st.markdown(f'<div style="margin:8px 0;">{pills}</div>', unsafe_allow_html=True)
-                st.markdown("**Coverage by Category:**")
-                for cat, cov in sr["coverage"].items():
-                    if cov["found"]:
-                        st.markdown(brand_status(f"**{cat.replace('_', ' ').title()}** — Found: {', '.join(cov['found'])} | Missing: {', '.join(cov['missing']) or 'None'}", "success"), unsafe_allow_html=True)
-                    else:
-                        st.markdown(brand_status(f"**{cat.replace('_', ' ').title()}** — None found", "warning"), unsafe_allow_html=True)
-                if sr["validations"]:
-                    st.markdown("**Field Completeness:**")
-                    for v in sr["validations"]:
-                        s = "success" if v["completeness"] >= 80 else "warning" if v["completeness"] >= 50 else "danger"
-                        st.markdown(brand_status(f"**{v['type']}** — {v['completeness']}% complete", s), unsafe_allow_html=True)
-                        if v["missing"]:
-                            st.caption(f"Missing: {', '.join(v['missing'])}")
-                for s in sr["schemas"]:
-                    if s["data"]:
-                        with st.expander(f"View `{s['type']}` data"):
-                            st.json(s["data"])
-            else:
+
+            # Essential types
+            ess_found = schema_data.get("essential_found", [])
+            ess_missing = schema_data.get("essential_missing", [])
+            if ess_found or ess_missing:
+                found_str = ", ".join(ess_found) if ess_found else "None"
+                missing_str = ", ".join(ess_missing) if ess_missing else "None"
+                st.markdown(brand_status(f"Essential types — Found: {found_str} | Missing: {missing_str}", "success" if len(ess_missing) <= 1 else "warning"), unsafe_allow_html=True)
+
+            # Speakable & sameAs
+            if schema_data.get("has_speakable"):
+                st.markdown(brand_status("Speakable markup found", "success"), unsafe_allow_html=True)
+            if schema_data.get("has_sameas"):
+                st.markdown(brand_status("sameAs references found", "success"), unsafe_allow_html=True)
+
+            # Field validations
+            if validations:
+                st.markdown("**Field Completeness:**")
+                for v in validations:
+                    comp = v.get("completeness", 0)
+                    s = "success" if comp >= 80 else "warning" if comp >= 50 else "danger"
+                    st.markdown(brand_status(f"**{v.get('type', '?')}** — {comp}% complete", s), unsafe_allow_html=True)
+                    if v.get("missing"):
+                        st.caption(f"Missing: {', '.join(v['missing'])}")
+
+            # Meta info
+            if meta_data:
+                st.markdown("**Meta:**")
+                title = meta_data.get("title", "")
+                st.markdown(brand_status(f"Title ({len(title)} chars): {title[:70]}", "success" if title else "danger"), unsafe_allow_html=True)
+                desc = meta_data.get("desc", "")
+                desc_len = meta_data.get("desc_len", len(desc))
+                st.markdown(brand_status(f"Description ({desc_len} chars)", "success" if 100 <= desc_len <= 160 else "warning" if desc else "danger"), unsafe_allow_html=True)
+                canon = meta_data.get("canonical", "")
+                st.markdown(brand_status(f"Canonical: {canon[:80] or 'Missing'}", "success" if canon else "warning"), unsafe_allow_html=True)
+                og = meta_data.get("og_tags", {})
+                st.markdown(brand_status(f"OG tags: {len(og)}", "success" if len(og) >= 3 else "warning"), unsafe_allow_html=True)
+
+            # Entity
+            if entity_data:
+                st.markdown(brand_status(f"Author: {'Found' if entity_data.get('has_author') else 'Missing'}", "success" if entity_data.get("has_author") else "warning"), unsafe_allow_html=True)
+                st.markdown(brand_status(f"Publication date: {'Found' if entity_data.get('has_date') else 'Missing'}", "success" if entity_data.get("has_date") else "warning"), unsafe_allow_html=True)
+
+            # ScoreBuilder rubric items
+            items = sr.get("items", [])
+            if items:
+                with st.expander("View scoring rubric"):
+                    for item in items:
+                        pts = item.get("points", 0)
+                        lbl = item.get("label", "")
+                        s = "success" if pts > 0 else "warning" if "missing" in lbl.lower() or "no " in lbl.lower() else "info"
+                        st.markdown(brand_status(f"+{pts} pts — {lbl}", s), unsafe_allow_html=True)
+
+            # Raw schema data
+            for s_item in schemas:
+                if s_item.get("data"):
+                    with st.expander(f"View `{s_item.get('type', '?')}` data"):
+                        st.json(s_item["data"])
+
+            if not schemas:
                 st.markdown(brand_status("No Schema.org structured data found on this page", "warning"), unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # PILLAR 4: AI DISCOVERABILITY
+    # ══════════════════════════════════════════════════════════════════════
+    st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
+    st.markdown(pillar_header(4, "AI Discoverability", llm_score), unsafe_allow_html=True)
+    st.markdown(f'{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">llm.txt files + AI Info Page</span>', unsafe_allow_html=True)
+    st.markdown(brand_score_bar(llm_score), unsafe_allow_html=True)
+    pillar_explainer("llm_txt")
+
+    # llm.txt files
+    st.markdown(f'<div style="font-weight:600;color:{BRAND["white"]};margin:12px 0 8px;">llm.txt Files:</div>', unsafe_allow_html=True)
+    llm_txt_data = llm_result.get("llm_txt", llm_result.get("files", {}))
+    any_llm = any(v.get("found") for v in llm_txt_data.values()) if llm_txt_data else False
+    if any_llm:
+        for path, info in llm_txt_data.items():
+            if info.get("found"):
+                st.markdown(brand_status(f"Found: {path}", "success"), unsafe_allow_html=True)
+                q = info.get("quality", {})
+                if q:
+                    q_cols = st.columns(4)
+                    q_cols[0].metric("Lines", q.get("line_count", q.get("lines", "—")))
+                    q_cols[1].metric("Chars", q.get("char_count", q.get("chars", "—")))
+                    q_cols[2].metric("Links", "Yes" if q.get("has_links") else "No")
+                    q_cols[3].metric("Sections", "Yes" if q.get("has_sections") else "No")
+                with st.expander(f"View contents of {path}"):
+                    st.code(info.get("content", ""), language="markdown")
+            else:
+                st.caption(f"— {path} not found")
+    else:
+        st.markdown(brand_status("No llm.txt files found", "warning"), unsafe_allow_html=True)
+        st.info("💡 **llm.txt** provides direct guidance to AI bots on what to prioritise. [Learn more →](https://llmstxt.org)")
+
+    # AI Info Page
+    ai_info = llm_result.get("ai_info_page", {})
+    st.markdown(f'<div style="font-weight:600;color:{BRAND["white"]};margin:16px 0 8px;">AI Info Page:</div>', unsafe_allow_html=True)
+    if ai_info.get("found"):
+        st.markdown(brand_status(f"AI Info Page found: {ai_info.get('url', '')}", "success"), unsafe_allow_html=True)
+        st.markdown(brand_status(f"Linked from footer: {'Yes' if ai_info.get('linked_from_footer') else 'No — critical for discoverability'}", "success" if ai_info.get("linked_from_footer") else "danger"), unsafe_allow_html=True)
+        if "indexable" in ai_info:
+            st.markdown(brand_status(f"Indexable: {'Yes' if ai_info['indexable'] else 'No — has noindex'}", "success" if ai_info.get("indexable") else "danger"), unsafe_allow_html=True)
+        if "has_updated_date" in ai_info:
+            st.markdown(brand_status(f"'Last Updated' date: {'Found' if ai_info['has_updated_date'] else 'Missing — add for freshness'}", "success" if ai_info.get("has_updated_date") else "warning"), unsafe_allow_html=True)
+        if "is_simple_html" in ai_info:
+            st.markdown(brand_status(f"Simple HTML: {'Yes' if ai_info['is_simple_html'] else 'Heavy JS — should be simple for AI'}", "success" if ai_info.get("is_simple_html") else "warning"), unsafe_allow_html=True)
+    else:
+        st.markdown(brand_status("No AI Info Page found at /ai-info, /llm-info, or similar", "warning"), unsafe_allow_html=True)
+        st.info("💡 Create an **AI Info Page** at `/ai-info` — your brand's official fact sheet for AI. Include brand basics, key products, FAQs, and a 'Last Updated' date. Link it from your footer. Keep it simple HTML.")
+
+    # ScoreBuilder rubric
+    llm_items = llm_result.get("items", [])
+    if llm_items:
+        with st.expander("View AI Discoverability scoring rubric"):
+            for item in llm_items:
+                pts = item.get("points", 0)
+                lbl = item.get("label", "")
+                s = "success" if pts > 0 else "info"
+                st.markdown(brand_status(f"+{pts} pts — {lbl}", s), unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════════════
     # LIVE BOT CRAWL
