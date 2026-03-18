@@ -838,8 +838,9 @@ if run_audit:
     st.markdown(brand_score_bar(robots_score), unsafe_allow_html=True)
     pillar_explainer("robots_txt")
 
-    if robots_result["found"]:
-        st.markdown(brand_status(f"robots.txt found at {robots_result['url']}", "success"), unsafe_allow_html=True)
+    if robots_result.get("found"):
+        robots_url = robots_result.get("robots", {}).get("url", robots_result.get("url", ""))
+        st.markdown(brand_status(f"robots.txt found at {robots_url}", "success"), unsafe_allow_html=True)
         st.markdown(f"**AI Agent Access:**")
         for company in AI_BOTS:
             company_bots = {k: v for k, v in robots_result.get("ai_agent_results", robots_result.get("ai_results", {})).items() if v["company"] == company}
@@ -874,9 +875,10 @@ if run_audit:
                 if len(blocked) > 10:
                     st.caption(f"…and {len(blocked) - 10} more")
         with st.expander("Raw robots.txt"):
-            st.code(robots_result["raw"][:8000], language="text")
+            st.code(robots_result.get("raw", "")[:8000], language="text")
     else:
-        st.markdown(brand_status(f"No robots.txt found at {robots_result['url']}", "danger"), unsafe_allow_html=True)
+        robots_url = robots_result.get("robots", {}).get("url", robots_result.get("url", ""))
+        st.markdown(brand_status(f"No robots.txt found at {robots_url}", "danger"), unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════════════
     # PILLAR 3: SCHEMA & ENTITY (page-level)
@@ -1100,8 +1102,9 @@ if run_audit:
 
     # Well-known AI files (site-level)
     st.markdown(f'<div style="margin:16px 0 8px 0;">{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="font-weight:600;color:{BRAND["white"]};">AI Policy Files:</span></div>', unsafe_allow_html=True)
+    wellknown_result = llm_result.get("wellknown", {})
     for path, info in wellknown_result.items():
-        if info["found"]:
+        if info.get("found"):
             st.markdown(brand_status(f"Found: {path}", "success"), unsafe_allow_html=True)
         else:
             st.caption(f"— {path} not found")
@@ -1161,7 +1164,7 @@ if run_audit:
     elif schema_score < 60:
         all_missing = []
         for sr in schema_results.values():
-            for v in sr.get("validations", []):
+            for v in sr.get("schema", {}).get("validations", []):
                 all_missing.extend(v.get("missing", []))
         missing_set = list(set(all_missing))
         if missing_set:
@@ -1218,7 +1221,7 @@ if run_audit:
                 "robots": robots_result if isinstance(robots_result, dict) else {},
                 "cloudflare": (robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}),
                 "schema_summary": {
-                    "types_found": [t for sr in schema_results.values() for t in sr.get("types_found", [])],
+                    "types_found": [t for sr in schema_results.values() for t in sr.get("schema", {}).get("types", [])],
                     "has_org_sameas": any(sr.get("entity", {}).get("has_org_sameas") for sr in schema_results.values()),
                     "has_author": any(sr.get("entity", {}).get("has_author") for sr in schema_results.values()),
                     "has_date_published": any(sr.get("entity", {}).get("has_date_published") for sr in schema_results.values()),
