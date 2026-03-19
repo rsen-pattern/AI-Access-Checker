@@ -382,7 +382,8 @@ def generate_report_text(domain, overall, pillar_scores, url_labels, js_results,
         lines.append(f"  Sensitive paths exposed: {exposed}/{len(robots_result['sensitive_paths'])}")
         lines.append("  AI Agent Access:")
         for bn, info in robots_result.get("ai_agent_results", robots_result.get("ai_results", {})).items():
-            status = "Allowed" if info["robots_allowed"] else "Blocked" if info["robots_allowed"] is False else "Unknown"
+            allowed_val = info.get("robots_allowed", info.get("allowed"))
+            status = "Allowed" if allowed_val is True else "Blocked" if allowed_val is False else "Unknown"
             lines.append(f"    {bn}: {status}")
     else:
         lines.append("  robots.txt: NOT FOUND")
@@ -847,9 +848,10 @@ if run_audit:
             if company_bots:
                 with st.expander(f"{company} ({len(company_bots)} agents)"):
                     for bot_name, info in company_bots.items():
-                        if info["robots_allowed"] is True:
+                        allowed_val = info.get("robots_allowed", info.get("allowed"))
+                        if allowed_val is True:
                             st.markdown(brand_status(f"**{bot_name}**: Allowed", "success"), unsafe_allow_html=True)
-                        elif info["robots_allowed"] is False:
+                        elif allowed_val is False:
                             st.markdown(brand_status(f"**{bot_name}**: Blocked", "danger"), unsafe_allow_html=True)
                         else:
                             st.markdown(brand_status(f"**{bot_name}**: Unknown", "warning"), unsafe_allow_html=True)
