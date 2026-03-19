@@ -1716,6 +1716,57 @@ Give a verdict (Coherent / Needs Review / Inconsistent) with 2-3 specific observ
 Keep under 150 words.""", max_tokens=250)
 
 
+def analyse_semantic_hierarchy(url, sem_r, page_label, get_secret) -> str | None:
+    """
+    AI analysis of per-page semantic hierarchy results — heading structure,
+    semantic HTML elements, and meta directives — explaining what it means for AI visibility.
+    """
+    api_key = get_secret("BIFROST_API_KEY", "")
+    if not api_key or not sem_r:
+        return None
+
+    headings = sem_r.get("headings", [])
+    hierarchy_ok = sem_r.get("hierarchy_ok", True)
+    semantic_elements = sem_r.get("semantic_elements", {})
+    meta_tags = sem_r.get("meta_tags", [])
+    nosnippet = sem_r.get("nosnippet_elements", 0)
+    html_len = sem_r.get("html_length", 0)
+    text_len = sem_r.get("text_length", 0)
+    ratio = (text_len / html_len * 100) if html_len > 0 else 0
+
+    heading_lines = [f"H{h['level']}: {h['text'][:80]}" for h in headings[:15]]
+    meta_lines = [f"{t['name']}: {t['content']}" for t in meta_tags] if meta_tags else ["No robots meta tags found"]
+    sem_elem_lines = [f"<{tag}>: {count}" for tag, count in semantic_elements.items()] if semantic_elements else ["No semantic HTML5 elements found"]
+
+    prompt = f"""You are an AI Search Visibility expert at Pattern, analysing how well a webpage's structure supports AI crawler indexing and citation.
+
+URL: {url}
+Page type: {page_label}
+
+HEADING STRUCTURE:
+Hierarchy valid (no skipped levels): {hierarchy_ok}
+Headings found:
+{chr(10).join(heading_lines) if heading_lines else "No headings found"}
+
+SEMANTIC HTML5 ELEMENTS:
+{chr(10).join(sem_elem_lines)}
+
+META DIRECTIVES:
+{chr(10).join(meta_lines)}
+data-nosnippet elements: {nosnippet}
+Text-to-HTML ratio: {ratio:.1f}%
+
+Write 4-6 bullet points (use • character) for a brand manager explaining:
+1. What the heading and semantic structure issues mean for how AI crawlers understand this page
+2. The business impact — what happens when AI can't interpret page structure correctly
+3. What the meta directives allow or restrict AI crawlers from doing
+4. One clear, practical recommendation to fix the most impactful issue
+
+Keep it concise and non-technical. Plain language a brand manager would understand. No markdown headers."""
+
+    return _bifrost_call(api_key, prompt, max_tokens=500)
+
+
 def ai_analyse_js_gap(url, comparison, page_label, get_secret) -> str | None:
     """
     JS gap AI analysis via Bifrost (BIFROST_API_KEY).
