@@ -1767,6 +1767,98 @@ Keep it concise and non-technical. Plain language a brand manager would understa
     return _bifrost_call(api_key, prompt, max_tokens=500)
 
 
+def analyse_robots_access(base_url, robots_result, get_secret) -> str | None:
+    """
+    AI analysis of robots.txt and crawler access — explains what the configuration
+    means for AI bot visibility in plain language for a brand manager.
+    """
+    api_key = get_secret("BIFROST_API_KEY", "")
+    if not api_key or not robots_result:
+        return None
+
+    found = robots_result.get("found", False)
+    ai_results = robots_result.get("ai_agent_results", robots_result.get("ai_results", {}))
+    sitemaps = robots_result.get("sitemaps", [])
+    blocked_resources = robots_result.get("blocked_resources", [])
+    sensitive_paths = robots_result.get("sensitive_paths", {})
+
+    blocked_bots = [name for name, r in ai_results.items() if r.get("robots_allowed") is False or r.get("allowed") is False]
+    allowed_bots = [name for name, r in ai_results.items() if r.get("robots_allowed") is True or r.get("allowed") is True]
+    exposed_paths = [p for p, r in sensitive_paths.items() if not r.get("blocked", not r.get("accessible_per_robots", False))]
+
+    lines = [
+        f"Website: {base_url}",
+        f"robots.txt present: {found}",
+        f"AI bots explicitly allowed: {', '.join(allowed_bots) if allowed_bots else 'None'}",
+        f"AI bots blocked: {', '.join(blocked_bots) if blocked_bots else 'None'}",
+        f"Sitemaps declared: {len(sitemaps)} ({', '.join(sitemaps[:3]) if sitemaps else 'None'})",
+        f"CSS/JS resources blocked: {', '.join(blocked_resources) if blocked_resources else 'None'}",
+        f"Sensitive paths exposed to crawlers: {len(exposed_paths)} ({', '.join(exposed_paths[:5]) if exposed_paths else 'None'})",
+    ]
+
+    prompt = f"""You are an AI Search Visibility expert at Pattern analysing a website's robots.txt configuration.
+
+{chr(10).join(lines)}
+
+Write 4-6 bullet points (use • character) for a brand manager explaining:
+1. What the current robots.txt setup means for AI crawler access (GPTBot, ClaudeBot, PerplexityBot)
+2. The business impact of any blocked AI bots — what visibility is being lost
+3. Whether the sitemap and resource access configuration helps or hurts AI indexing
+4. Any security risks from exposed paths
+5. One clear, priority recommendation to improve AI crawler access
+
+Keep it concise and non-technical. Plain language a brand manager would understand. No markdown headers."""
+
+    return _bifrost_call(api_key, prompt, max_tokens=500)
+
+
+def analyse_llm_discoverability(base_url, llm_result, get_secret) -> str | None:
+    """
+    AI analysis of llm.txt and AI Info Page — explains what the discoverability
+    setup means for how AI agents find and understand the brand.
+    """
+    api_key = get_secret("BIFROST_API_KEY", "")
+    if not api_key or not llm_result:
+        return None
+
+    llm_txt_data = llm_result.get("llm_txt", llm_result.get("files", {}))
+    ai_info = llm_result.get("ai_info_page", {})
+    wellknown = llm_result.get("wellknown", {})
+
+    found_files = [path for path, info in llm_txt_data.items() if info.get("found")] if llm_txt_data else []
+    any_llm = bool(found_files)
+
+    first_quality = {}
+    if found_files:
+        first_quality = llm_txt_data[found_files[0]].get("quality", {})
+
+    wellknown_found = [path for path, info in wellknown.items() if info.get("found")] if wellknown else []
+
+    lines = [
+        f"Website: {base_url}",
+        f"llm.txt files found: {', '.join(found_files) if found_files else 'None'}",
+        f"llm.txt quality (first file): lines={first_quality.get('line_count', first_quality.get('lines', '?'))}, has_links={first_quality.get('has_links', '?')}, has_sections={first_quality.get('has_sections', '?')}",
+        f"AI Info Page found: {ai_info.get('found', False)} at {ai_info.get('url', 'N/A')}",
+        f"AI Info Page linked from footer: {ai_info.get('linked_from_footer', False)}",
+        f"AI Info Page indexable: {ai_info.get('indexable', 'unknown')}",
+        f"Well-known AI files found: {', '.join(wellknown_found) if wellknown_found else 'None'}",
+    ]
+
+    prompt = f"""You are an AI Search Visibility expert at Pattern analysing how discoverable a brand is to AI agents.
+
+{chr(10).join(lines)}
+
+Write 4-6 bullet points (use • character) for a brand manager explaining:
+1. What llm.txt and the AI Info Page do — and whether this site has them set up correctly
+2. The business impact of missing or incomplete AI guidance files — what AI agents do when they can't find this information
+3. How the current setup affects whether AI assistants (ChatGPT, Perplexity, Claude) can accurately describe the brand
+4. One clear, priority action to most improve AI discoverability this week
+
+Keep it concise and non-technical. Plain language a brand manager would understand. No markdown headers."""
+
+    return _bifrost_call(api_key, prompt, max_tokens=500)
+
+
 def ai_analyse_js_gap(url, comparison, page_label, get_secret) -> str | None:
     """
     JS gap AI analysis via Bifrost (BIFROST_API_KEY).
