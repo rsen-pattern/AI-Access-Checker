@@ -270,7 +270,7 @@ from checks import (
     run_live_bot_crawl, validate_schema_fields, check_schema_meta,
     check_llm_discoverability, check_security_exposure,
     pattern_brain_analysis, analyse_schema_quality, analyse_content_clarity, analyse_entity_coherence,
-    ai_analyse_js_gap,
+    ai_analyse_js_gap, analyse_semantic_hierarchy, analyse_robots_access, analyse_llm_discoverability,
 )
 
 def check_semantic_hierarchy(url):
@@ -882,6 +882,12 @@ if run_audit:
         robots_url = robots_result.get("robots", {}).get("url", robots_result.get("url", ""))
         st.markdown(brand_status(f"No robots.txt found at {robots_url}", "danger"), unsafe_allow_html=True)
 
+    # AI Analysis — What This Means
+    robots_ai = analyse_robots_access(parsed.netloc, robots_result, get_secret)
+    if robots_ai:
+        st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{robots_ai}</div>', unsafe_allow_html=True)
+
     # ══════════════════════════════════════════════════════════════════════
     # PILLAR 3: SCHEMA & ENTITY (page-level)
     # ══════════════════════════════════════════════════════════════════════
@@ -973,6 +979,12 @@ if run_audit:
             if not schemas:
                 st.markdown(brand_status("No Schema.org structured data found on this page", "warning"), unsafe_allow_html=True)
 
+            # AI Analysis — What This Means
+            schema_ai = analyse_schema_quality(test_url, schemas, get_secret)
+            if schema_ai:
+                st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{schema_ai}</div>', unsafe_allow_html=True)
+
     # ══════════════════════════════════════════════════════════════════════
     # PILLAR 4: AI DISCOVERABILITY
     # ══════════════════════════════════════════════════════════════════════
@@ -1030,6 +1042,12 @@ if run_audit:
                 lbl = item.get("label", "")
                 s = "success" if pts > 0 else "info"
                 st.markdown(brand_status(f"+{pts} pts — {lbl}", s), unsafe_allow_html=True)
+
+    # AI Analysis — What This Means
+    llm_ai = analyse_llm_discoverability(parsed.netloc, llm_result, get_secret)
+    if llm_ai:
+        st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{llm_ai}</div>', unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════════════
     # LIVE BOT CRAWL
@@ -1101,6 +1119,12 @@ if run_audit:
                 if html_len > 0:
                     ratio = text_len / html_len * 100
                     st.markdown(brand_status(f"Text-to-HTML ratio: {ratio:.1f}%", "success" if ratio >= 15 else "warning"), unsafe_allow_html=True)
+
+            # AI Analysis — What This Means
+            sem_ai = analyse_semantic_hierarchy(test_url, sem_r, label, get_secret)
+            if sem_ai:
+                st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{sem_ai}</div>', unsafe_allow_html=True)
 
     # Well-known AI files (site-level)
     st.markdown(f'<div style="margin:16px 0 8px 0;">{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="font-weight:600;color:{BRAND["white"]};">AI Policy Files:</span></div>', unsafe_allow_html=True)
