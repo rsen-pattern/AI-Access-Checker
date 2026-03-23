@@ -303,6 +303,237 @@ def check_semantic_hierarchy(url):
     results["text_length"] = len(soup.get_text(separator=" ", strip=True))
     return results
 
+def generate_report_html(domain, overall, pillar_scores, url_labels, js_results, llm_result, robots_result, schema_results, semantic_results, bot_crawl_results, recs):
+    """Generate a self-contained branded HTML report — all sections expanded, printable to PDF."""
+    grade_map = {90: ("A", "Excellent"), 75: ("B", "Good"), 60: ("C", "Fair"), 40: ("D", "Needs Work"), 0: ("F", "Critical")}
+    def _grade(s):
+        for threshold, (letter, label) in sorted(grade_map.items(), reverse=True):
+            if s >= threshold:
+                return letter, label
+        return "F", "Critical"
+
+    def _bar(score, color="#770bff"):
+        return f'<div style="background:#1e1e2e;border-radius:4px;height:8px;width:100%;margin:4px 0 8px 0;"><div style="background:{color};width:{score}%;height:8px;border-radius:4px;"></div></div>'
+
+    def _status_row(text, status):
+        colors = {"success": "#00d4aa", "warning": "#f59e0b", "danger": "#ef4444", "info": "#3b82f6"}
+        icons  = {"success": "✓", "warning": "⚠", "danger": "✗", "info": "ℹ"}
+        c = colors.get(status, "#888")
+        i = icons.get(status, "•")
+        return f'<div style="display:flex;align-items:flex-start;gap:8px;padding:4px 0;"><span style="color:{c};flex-shrink:0;">{i}</span><span style="color:#e0e0e0;font-size:13px;">{text}</span></div>'
+
+    sorted_pillars = sorted(pillar_scores.items(), key=lambda x: x[1])
+    weakest  = sorted_pillars[0]
+    strongest = sorted_pillars[-1]
+    grade_letter, grade_label = _grade(overall)
+    grade_color = "#00d4aa" if overall >= 75 else "#f59e0b" if overall >= 50 else "#ef4444"
+
+    # ── Overall Scores Section ───────────────────────────────────────────
+    pillar_rows = ""
+    for name, score in pillar_scores.items():
+        g, _ = _grade(score)
+        c = "#00d4aa" if score >= 75 else "#f59e0b" if score >= 50 else "#ef4444"
+        pillar_rows += f'<tr><td style="padding:6px 12px;color:#e0e0e0;">{name}</td><td style="padding:6px 12px;text-align:center;font-weight:700;color:{c};">{score}%</td><td style="padding:6px 12px;text-align:center;color:{c};">{g}</td></tr>'
+
+    # ── Pillar 1: JS Rendering ───────────────────────────────────────────
+    js_section = '<h2 style="color:#770bff;border-bottom:2px solid #770bff;padding-bottom:6px;margin-top:32px;">Pillar 1 — JavaScript Rendering</h2>'
+    for test_url, js_r in js_results.items():
+        lbl = url_labels.get(test_url, test_url)
+        if js_r.get("error"):
+            js_section += f'<p style="color:#ef4444;">{lbl}: ERROR — {js_r["error"]}</p>'; continue
+        score = js_r.get("score", 0)
+        sc_color = "#00d4aa" if score >= 75 else "#f59e0b" if score >= 50 else "#ef4444"
+        js_section += f'<h3 style="color:#e0e0e0;margin:20px 0 4px 0;">{lbl} <span style="color:{sc_color};">{score}/100</span></h3>'
+        comp = js_r.get("comparison")
+        if comp:
+            js_section += '<table style="width:100%;border-collapse:collapse;font-size:13px;margin:8px 0;">'
+            js_section += '<tr style="background:#1e1e2e;"><th style="padding:6px 10px;text-align:left;color:#888;">Content</th><th style="padding:6px 10px;text-align:center;color:#888;">HTML (Crawler)</th><th style="padding:6px 10px;text-align:center;color:#888;">JS (Browser)</th><th style="padding:6px 10px;text-align:left;color:#888;">Status</th></tr>'
+            for c in comp["comparison"]:
+                bg = "#ef444415" if c["status"] == "missing" else "transparent"
+                st_col = "#ef4444" if c["status"] == "missing" else "#00d4aa"
+                st_txt = "MISSING" if c["status"] == "missing" else "OK"
+                js_section += f'<tr style="background:{bg};border-bottom:1px solid #2a2a3e;"><td style="padding:5px 10px;color:#e0e0e0;">{c["name"]}</td><td style="padding:5px 10px;text-align:center;color:{st_col};">{c["html_val"]}</td><td style="padding:5px 10px;text-align:center;color:#00d4aa;">{c["js_val"]}</td><td style="padding:5px 10px;color:{st_col};font-weight:600;">{st_txt}</td></tr>'
+            js_section += '</table>'
+            html_t = comp["html_summary"]["text_content_length"]
+            js_t   = comp["js_summary"]["text_content_length"]
+            if js_t > html_t:
+                pct = round(html_t / max(js_t, 1) * 100)
+                pct_c = "#ef4444" if pct < 30 else "#f59e0b" if pct < 70 else "#00d4aa"
+                js_section += f'<p style="color:{pct_c};font-weight:700;">{pct}% of content visible to AI crawlers ({html_t:,} / {js_t:,} chars)</p>'
+        if js_r.get("frameworks"):
+            js_section += '<p style="color:#f59e0b;font-weight:600;">JS Frameworks:</p><ul>'
+            for name2, sev, note in js_r["frameworks"]:
+                js_section += f'<li style="color:#e0e0e0;">{name2} ({sev}) — {note}</li>'
+            js_section += '</ul>'
+
+    # ── Pillar 2: Robots & Crawlability ─────────────────────────────────
+    rob_section = '<h2 style="color:#770bff;border-bottom:2px solid #770bff;padding-bottom:6px;margin-top:32px;">Pillar 2 — Robots &amp; Crawlability</h2>'
+    if robots_result.get("found"):
+        rob_section += _status_row("robots.txt found", "success")
+        ai_res = robots_result.get("ai_agent_results", robots_result.get("ai_results", {}))
+        rob_section += '<h3 style="color:#e0e0e0;margin:12px 0 6px 0;">AI Bot Access:</h3>'
+        for bn, info in ai_res.items():
+            av = info.get("robots_allowed", info.get("allowed"))
+            st2 = "success" if av is True else "danger" if av is False else "warning"
+            rob_section += _status_row(f"{bn}: {'Allowed' if av is True else 'Blocked' if av is False else 'Unknown'}", st2)
+        if robots_result.get("sitemaps"):
+            rob_section += '<h3 style="color:#e0e0e0;margin:12px 0 6px 0;">Sitemaps:</h3>'
+            for sm in robots_result["sitemaps"]:
+                rob_section += _status_row(sm, "success")
+        exposed = [(p, r) for p, r in robots_result.get("sensitive_paths", {}).items() if not r.get("blocked", not r.get("accessible_per_robots", False))]
+        if exposed:
+            rob_section += f'<h3 style="color:#ef4444;margin:12px 0 6px 0;">Sensitive Paths Exposed ({len(exposed)}):</h3>'
+            for path, _ in exposed:
+                rob_section += _status_row(path, "warning")
+    else:
+        rob_section += _status_row("No robots.txt found", "danger")
+
+    # ── Pillar 3: Schema & Entity ────────────────────────────────────────
+    schema_section = '<h2 style="color:#770bff;border-bottom:2px solid #770bff;padding-bottom:6px;margin-top:32px;">Pillar 3 — Schema &amp; Entity</h2>'
+    for test_url, sr in schema_results.items():
+        lbl = url_labels.get(test_url, test_url)
+        if sr.get("error"):
+            schema_section += f'<p style="color:#ef4444;">{lbl}: ERROR</p>'; continue
+        schema_data = sr.get("schema", {})
+        schemas = schema_data.get("schemas", [])
+        types = schema_data.get("types", [])
+        validations = schema_data.get("validations", [])
+        grade2 = sr.get("grade", {})
+        gl = grade2.get("letter", "?") if isinstance(grade2, dict) else "?"
+        sc = sr.get("score", 0)
+        sc_color = "#00d4aa" if sc >= 75 else "#f59e0b" if sc >= 50 else "#ef4444"
+        schema_section += f'<h3 style="color:#e0e0e0;margin:20px 0 4px 0;">{lbl} <span style="color:{sc_color};">{sc}/100 ({gl})</span></h3>'
+        if types:
+            schema_section += '<div style="margin:6px 0;">' + " ".join(f'<span style="background:#770bff20;color:#770bff;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600;">{t}</span>' for t in types) + '</div>'
+        ess_found   = schema_data.get("essential_found", [])
+        ess_missing = schema_data.get("essential_missing", [])
+        if ess_found:
+            schema_section += _status_row(f"Essential types found: {', '.join(ess_found)}", "success")
+        if ess_missing:
+            schema_section += _status_row(f"Essential types missing: {', '.join(ess_missing)}", "warning")
+        for v in validations:
+            comp2 = v.get("completeness", 0)
+            st3 = "success" if comp2 >= 80 else "warning" if comp2 >= 50 else "danger"
+            schema_section += _status_row(f"{v.get('type','?')}: {comp2}% complete" + (f" — Missing: {', '.join(v['missing'])}" if v.get('missing') else ""), st3)
+        meta_data = sr.get("meta", {})
+        if meta_data:
+            title = meta_data.get("title", "")
+            desc_len = meta_data.get("desc_len", 0)
+            schema_section += _status_row(f"Title ({len(title)} chars): {title[:80]}", "success" if title else "danger")
+            schema_section += _status_row(f"Meta description: {desc_len} chars", "success" if 100 <= desc_len <= 160 else "warning")
+        if not schemas:
+            schema_section += _status_row("No Schema.org structured data found", "warning")
+
+    # ── Pillar 4: AI Discoverability ─────────────────────────────────────
+    llm_section = '<h2 style="color:#770bff;border-bottom:2px solid #770bff;padding-bottom:6px;margin-top:32px;">Pillar 4 — AI Discoverability</h2>'
+    llm_txt_data = llm_result.get("llm_txt", llm_result.get("files", {}))
+    any_llm = any(v.get("found") for v in llm_txt_data.values()) if llm_txt_data else False
+    for path, info in llm_txt_data.items():
+        llm_section += _status_row(f"{path}: {'Found' if info.get('found') else 'Not found'}", "success" if info.get("found") else "warning")
+    ai_info = llm_result.get("ai_info_page", {})
+    if ai_info.get("found"):
+        llm_section += _status_row(f"AI Info Page: {ai_info.get('url','')}", "success")
+        llm_section += _status_row(f"Linked from footer: {'Yes' if ai_info.get('linked_from_footer') else 'No'}", "success" if ai_info.get("linked_from_footer") else "danger")
+    else:
+        llm_section += _status_row("No AI Info Page found", "warning")
+
+    # ── Semantic Hierarchy ───────────────────────────────────────────────
+    sem_section = '<h2 style="color:#770bff;border-bottom:2px solid #770bff;padding-bottom:6px;margin-top:32px;">Semantic Hierarchy &amp; Content Structure</h2>'
+    for test_url, sem_r in semantic_results.items():
+        lbl = url_labels.get(test_url, test_url)
+        if sem_r.get("error"):
+            sem_section += f'<p style="color:#ef4444;">{lbl}: ERROR</p>'; continue
+        sem_section += f'<h3 style="color:#e0e0e0;margin:20px 0 4px 0;">{lbl}</h3>'
+        sem_section += _status_row(f"Heading hierarchy: {'Valid' if sem_r['hierarchy_ok'] else 'Issues — skipped levels detected'}", "success" if sem_r["hierarchy_ok"] else "warning")
+        if sem_r["semantic_elements"]:
+            for tag, count in sem_r["semantic_elements"].items():
+                sem_section += _status_row(f"&lt;{tag}&gt;: {count}", "success")
+        else:
+            sem_section += _status_row("No semantic HTML5 elements found", "warning")
+        html_len = sem_r.get("html_length", 0)
+        text_len = sem_r.get("text_length", 0)
+        if html_len > 0:
+            ratio = text_len / html_len * 100
+            sem_section += _status_row(f"Text-to-HTML ratio: {ratio:.1f}%", "success" if ratio >= 15 else "warning")
+
+    # ── Bot Crawl ────────────────────────────────────────────────────────
+    bot_section = ""
+    if bot_crawl_results:
+        bot_section = '<h2 style="color:#770bff;border-bottom:2px solid #770bff;padding-bottom:6px;margin-top:32px;">Live Bot Crawl Results</h2>'
+        for bn, r in bot_crawl_results.items():
+            if r["error"]:
+                bot_section += _status_row(f"{bn}: ERROR — {r['error']}", "danger")
+            else:
+                st4 = "success" if r["is_allowed"] else "danger"
+                bot_section += _status_row(f"{bn} ({r['company']}): {'Allowed' if r['is_allowed'] else 'BLOCKED'} — HTTP {r['status_code']} — {r['content_length']:,} chars", st4)
+
+    # ── Recommendations ──────────────────────────────────────────────────
+    rec_section = '<h2 style="color:#770bff;border-bottom:2px solid #770bff;padding-bottom:6px;margin-top:32px;">Priority Recommendations</h2>'
+    for i, (status, pillar, text) in enumerate(recs, 1):
+        icon = "🔴" if status == "danger" else "🟡"
+        c = "#ef4444" if status == "danger" else "#f59e0b"
+        rec_section += f'<div style="background:#1e1e2e;border-left:3px solid {c};border-radius:0 8px 8px 0;padding:10px 14px;margin:8px 0;"><strong style="color:{c};">{i}. [{pillar}]</strong> <span style="color:#e0e0e0;">{text}</span></div>'
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Pattern LLM Access Audit — {domain}</title>
+<style>
+  @media print {{ body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }} }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d0d1a; color: #e0e0e0; margin: 0; padding: 32px; line-height: 1.6; }}
+  h1, h2, h3 {{ margin-top: 0; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  @page {{ margin: 20mm; }}
+</style>
+</head>
+<body>
+<div style="text-align:center;padding:24px 0 16px;border-bottom:2px solid #770bff;margin-bottom:24px;">
+  <div style="font-size:11px;text-transform:uppercase;letter-spacing:3px;color:#888;margin-bottom:8px;">Pattern</div>
+  <h1 style="font-size:28px;font-weight:800;color:#fff;margin:0;">LLM Access Audit</h1>
+  <div style="color:#888;margin-top:6px;">{domain} &nbsp;·&nbsp; Generated {time.strftime('%Y-%m-%d %H:%M UTC')}</div>
+</div>
+
+<div style="display:flex;gap:24px;margin-bottom:32px;flex-wrap:wrap;">
+  <div style="background:#1e1e2e;border:1px solid #2a2a3e;border-radius:12px;padding:20px 28px;text-align:center;min-width:140px;">
+    <div style="font-size:48px;font-weight:800;color:{grade_color};">{overall}%</div>
+    <div style="font-size:14px;color:#888;margin-top:4px;">Overall AI Readiness</div>
+    <div style="font-size:18px;font-weight:700;color:{grade_color};">{grade_letter} — {grade_label}</div>
+  </div>
+  <div style="flex:1;min-width:300px;">
+    <table style="width:100%;">
+      <tr style="background:#1e1e2e;">
+        <th style="padding:6px 12px;text-align:left;color:#888;font-size:12px;text-transform:uppercase;">Pillar</th>
+        <th style="padding:6px 12px;text-align:center;color:#888;font-size:12px;text-transform:uppercase;">Score</th>
+        <th style="padding:6px 12px;text-align:center;color:#888;font-size:12px;text-transform:uppercase;">Grade</th>
+      </tr>
+      {pillar_rows}
+    </table>
+    <div style="margin-top:10px;font-size:13px;">
+      <span style="color:#00d4aa;">▲ Strongest: {strongest[0]} ({strongest[1]}%)</span>
+      &nbsp;·&nbsp;
+      <span style="color:#ef4444;">▼ Priority: {weakest[0]} ({weakest[1]}%)</span>
+    </div>
+  </div>
+</div>
+
+{js_section}
+{rob_section}
+{schema_section}
+{llm_section}
+{sem_section}
+{bot_section}
+{rec_section}
+
+<div style="text-align:center;margin-top:48px;padding-top:16px;border-top:1px solid #2a2a3e;color:#555;font-size:12px;">
+  Pattern LLM Access Checker &nbsp;·&nbsp; pattern.com
+</div>
+</body>
+</html>"""
+    return html
+
+
 def generate_report_text(domain, overall, pillar_scores, url_labels, js_results, llm_result, robots_result, schema_results, bot_crawl_results, recs):
     """Generate a plain-text audit report for PDF/download."""
     lines = []
@@ -519,151 +750,197 @@ all_url_inputs = {
 # AUDIT EXECUTION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-if run_audit:
-    # Validate all 7 URLs are provided
-    missing = [name for name, u in all_url_inputs.items() if not u or not u.strip()]
-    if missing:
-        st.error(f"Please provide all required URLs. Missing: {', '.join(missing)}")
-        st.stop()
+if run_audit or "_audit" in st.session_state:
+    if run_audit:
+        st.session_state.pop("_audit", None)
+        # Validate all 7 URLs are provided
+        missing = [name for name, u in all_url_inputs.items() if not u or not u.strip()]
+        if missing:
+            st.error(f"Please provide all required URLs. Missing: {', '.join(missing)}")
+            st.stop()
 
-    all_test_urls = [normalise_url(u.strip()) for u in all_url_inputs.values() if u and u.strip()]
-    url = all_test_urls[0]  # homepage
-    parsed = urlparse(url)
-    base_url = f"{parsed.scheme}://{parsed.netloc}"
+        all_test_urls = [normalise_url(u.strip()) for u in all_url_inputs.values() if u and u.strip()]
+        url = all_test_urls[0]  # homepage
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-    # URL labels for display
-    url_labels = {}
-    for name, u in all_url_inputs.items():
-        if u and u.strip():
-            url_labels[normalise_url(u.strip())] = name
+        # URL labels for display
+        url_labels = {}
+        for name, u in all_url_inputs.items():
+            if u and u.strip():
+                url_labels[normalise_url(u.strip())] = name
 
-    # ── ESTIMATED TIME BREAKDOWN ──────────────────────────────────────────
-    n_pages = len(all_test_urls)
-    has_js_api = any(get_secret(k, "") for k in ["SCRAPINGBEE_API_KEY", "SCRAPFLY_API_KEY", "BROWSERLESS_API_KEY"])
-    has_bifrost = bool(get_secret("BIFROST_API_KEY", ""))
+        # ── ESTIMATED TIME BREAKDOWN ──────────────────────────────────────────
+        n_pages = len(all_test_urls)
+        has_js_api = any(get_secret(k, "") for k in ["SCRAPINGBEE_API_KEY", "SCRAPFLY_API_KEY", "BROWSERLESS_API_KEY"])
+        has_bifrost = bool(get_secret("BIFROST_API_KEY", ""))
 
-    # Per-step timing estimates (seconds)
-    t_js        = n_pages * (18 if has_js_api else 5)   # JS render is slow if API key present
-    t_robots    = 35   # robots + Cloudflare live bot tests (16 bots × ~2s)
-    t_schema    = n_pages * 4
-    t_llm       = 15   # llm.txt paths + AI info page checks
-    t_security  = 25   # sensitive path crawls (4 categories × ~3-4 paths each)
-    t_botcrawl  = 30 if run_bot_crawl else 0
-    t_brain     = 20 if has_bifrost else 0
-    total_est   = t_js + t_robots + t_schema + t_llm + t_security + t_botcrawl + t_brain
-    total_min   = total_est // 60
-    total_sec   = total_est % 60
-    time_label  = f"{total_min}m {total_sec}s" if total_min > 0 else f"~{total_sec}s"
+        # Per-step timing estimates (seconds)
+        t_js        = n_pages * (18 if has_js_api else 5)   # JS render is slow if API key present
+        t_robots    = 35   # robots + Cloudflare live bot tests (16 bots × ~2s)
+        t_schema    = n_pages * 4
+        t_llm       = 15   # llm.txt paths + AI info page checks
+        t_security  = 25   # sensitive path crawls (4 categories × ~3-4 paths each)
+        t_botcrawl  = 30 if run_bot_crawl else 0
+        t_brain     = 20 if has_bifrost else 0
+        total_est   = t_js + t_robots + t_schema + t_llm + t_security + t_botcrawl + t_brain
+        total_min   = total_est // 60
+        total_sec   = total_est % 60
+        time_label  = f"{total_min}m {total_sec}s" if total_min > 0 else f"~{total_sec}s"
 
-    # Show the timing breakdown card
-    js_label       = f"~{t_js}s {'(JS render API active)' if has_js_api else '(HTML-only, add render API key for full comparison)'}"
-    robots_label   = f"~{t_robots}s (robots.txt + 16 live bot crawl tests + Cloudflare check)"
-    schema_label   = f"~{t_schema}s ({n_pages} pages × schema + entity)"
-    llm_label      = f"~{t_llm}s (llm.txt variants + AI info page detection + well-known files)"
-    security_label = f"~{t_security}s (critical / backend / customer / HTML exposure checks)"
-    botcrawl_label = f"~{t_botcrawl}s (sending requests as 16 AI bots)" if run_bot_crawl else "Skipped"
-    brain_label    = f"~{t_brain}s (4 AI analysis calls via Bifrost)" if has_bifrost else "Skipped (add BIFROST_API_KEY to enable)"
+        # Show the timing breakdown card
+        js_label       = f"~{t_js}s {'(JS render API active)' if has_js_api else '(HTML-only, add render API key for full comparison)'}"
+        robots_label   = f"~{t_robots}s (robots.txt + 16 live bot crawl tests + Cloudflare check)"
+        schema_label   = f"~{t_schema}s ({n_pages} pages × schema + entity)"
+        llm_label      = f"~{t_llm}s (llm.txt variants + AI info page detection + well-known files)"
+        security_label = f"~{t_security}s (critical / backend / customer / HTML exposure checks)"
+        botcrawl_label = f"~{t_botcrawl}s (sending requests as 16 AI bots)" if run_bot_crawl else "Skipped"
+        brain_label    = f"~{t_brain}s (4 AI analysis calls via Bifrost)" if has_bifrost else "Skipped (add BIFROST_API_KEY to enable)"
 
-    st.markdown(f"""
-<div style="background:{BRAND['bg_card']};border:1px solid {BRAND['border']};border-radius:12px;padding:16px 20px;margin-bottom:16px;">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-    <span style="font-weight:700;color:{BRAND['white']};font-size:15px;">⏱ Estimated Audit Time: {time_label}</span>
-    <span style="color:{BRAND['text_secondary']};font-size:12px;">{n_pages} pages · {'JS render API active' if has_js_api else 'HTML-only mode'}</span>
-  </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 20px;">
-    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['primary']};font-weight:600;">P1 JS Rendering</span> &nbsp;{js_label}</div>
-    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['primary']};font-weight:600;">P2 Robots & Crawl</span> &nbsp;{robots_label}</div>
-    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['primary']};font-weight:600;">P3 Schema & Entity</span> &nbsp;{schema_label}</div>
-    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['primary']};font-weight:600;">P4 AI Discoverability</span> &nbsp;{llm_label}</div>
-    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['warning']};font-weight:600;">Security Check</span> &nbsp;{security_label}</div>
-    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['teal']};font-weight:600;">Live Bot Crawl</span> &nbsp;{botcrawl_label}</div>
-    <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['purple']};font-weight:600;">Pattern Brain</span> &nbsp;{brain_label}</div>
-  </div>
-  <div style="margin-top:10px;padding-top:10px;border-top:1px solid {BRAND['border']};color:{BRAND['text_secondary']};font-size:11px;">
-    ℹ️ The audit makes live HTTP requests to your site as each AI bot. Do not close this tab.
-    {'Longer because JS rendering API is active — each page is loaded twice for full comparison.' if has_js_api else ''}
-  </div>
-</div>
-""", unsafe_allow_html=True)
+        st.markdown(f"""
+    <div style="background:{BRAND['bg_card']};border:1px solid {BRAND['border']};border-radius:12px;padding:16px 20px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <span style="font-weight:700;color:{BRAND['white']};font-size:15px;">⏱ Estimated Audit Time: {time_label}</span>
+        <span style="color:{BRAND['text_secondary']};font-size:12px;">{n_pages} pages · {'JS render API active' if has_js_api else 'HTML-only mode'}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 20px;">
+        <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['primary']};font-weight:600;">P1 JS Rendering</span> &nbsp;{js_label}</div>
+        <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['primary']};font-weight:600;">P2 Robots & Crawl</span> &nbsp;{robots_label}</div>
+        <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['primary']};font-weight:600;">P3 Schema & Entity</span> &nbsp;{schema_label}</div>
+        <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['primary']};font-weight:600;">P4 AI Discoverability</span> &nbsp;{llm_label}</div>
+        <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['warning']};font-weight:600;">Security Check</span> &nbsp;{security_label}</div>
+        <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['teal']};font-weight:600;">Live Bot Crawl</span> &nbsp;{botcrawl_label}</div>
+        <div style="color:{BRAND['text_secondary']};font-size:12px;"><span style="color:{BRAND['purple']};font-weight:600;">Pattern Brain</span> &nbsp;{brain_label}</div>
+      </div>
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid {BRAND['border']};color:{BRAND['text_secondary']};font-size:11px;">
+        ℹ️ The audit makes live HTTP requests to your site as each AI bot. Do not close this tab.
+        {'Longer because JS rendering API is active — each page is loaded twice for full comparison.' if has_js_api else ''}
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    audit_start = time.time()
-    progress = st.progress(0, text=f"Starting audit — estimated {time_label}…")
+        audit_start = time.time()
+        progress = st.progress(0, text=f"Starting audit — estimated {time_label}…")
 
-    # ── PILLAR 1: JS RENDERING (all pages) ────────────────────────────────
-    progress.progress(3, text=f"[1/6] JS Rendering — checking {n_pages} pages… (est. {js_label.split('(')[0].strip()})")
-    js_results = {}
-    for i, test_url in enumerate(all_test_urls):
+        # ── PILLAR 1: JS RENDERING (all pages) ────────────────────────────────
+        progress.progress(3, text=f"[1/6] JS Rendering — checking {n_pages} pages… (est. {js_label.split('(')[0].strip()})")
+        js_results = {}
+        for i, test_url in enumerate(all_test_urls):
+            elapsed = round(time.time() - audit_start)
+            label = url_labels.get(test_url, test_url)
+            progress.progress(3 + round(14 * (i / n_pages)),
+                text=f"[1/6] JS Rendering — {label} ({i+1}/{n_pages}) · {elapsed}s elapsed")
+            js_results[test_url] = check_js_rendering(test_url, get_secret)
+        js_score = round(sum(r.get("score", 0) for r in js_results.values()) / len(js_results))
+
+        # ── PILLAR 2: ROBOTS & CRAWLABILITY (site-level) ──────────────────────
         elapsed = round(time.time() - audit_start)
-        label = url_labels.get(test_url, test_url)
-        progress.progress(3 + round(14 * (i / n_pages)),
-            text=f"[1/6] JS Rendering — {label} ({i+1}/{n_pages}) · {elapsed}s elapsed")
-        js_results[test_url] = check_js_rendering(test_url, get_secret)
-    js_score = round(sum(r.get("score", 0) for r in js_results.values()) / len(js_results))
+        progress.progress(18, text=f"[2/6] Robots & Crawlability — fetching robots.txt + Cloudflare check… · {elapsed}s elapsed")
+        homepage_resp, _ = fetch(url)
+        homepage_html = homepage_resp.text if homepage_resp else ""
+        progress.progress(20, text=f"[2/6] Robots & Crawlability — running 16 live bot crawl tests… · {elapsed}s elapsed")
+        robots_result = check_robots_crawlability(base_url, homepage_html)
+        robots_score = robots_result.get("score", 0)
 
-    # ── PILLAR 2: ROBOTS & CRAWLABILITY (site-level) ──────────────────────
-    elapsed = round(time.time() - audit_start)
-    progress.progress(18, text=f"[2/6] Robots & Crawlability — fetching robots.txt + Cloudflare check… · {elapsed}s elapsed")
-    homepage_resp, _ = fetch(url)
-    homepage_html = homepage_resp.text if homepage_resp else ""
-    progress.progress(20, text=f"[2/6] Robots & Crawlability — running 16 live bot crawl tests… · {elapsed}s elapsed")
-    robots_result = check_robots_crawlability(base_url, homepage_html)
-    robots_score = robots_result.get("score", 0)
+        # ── PILLAR 3: SCHEMA & ENTITY (all pages) ─────────────────────────────
+        schema_results = {}
+        for i, test_url in enumerate(all_test_urls):
+            elapsed = round(time.time() - audit_start)
+            label = url_labels.get(test_url, test_url)
+            progress.progress(38 + round(14 * (i / n_pages)),
+                text=f"[3/6] Schema & Entity — {label} ({i+1}/{n_pages}) · {elapsed}s elapsed")
+            schema_results[test_url] = check_schema_meta(test_url)
+        schema_score = round(sum(r.get("score", 0) for r in schema_results.values()) / len(schema_results))
 
-    # ── PILLAR 3: SCHEMA & ENTITY (all pages) ─────────────────────────────
-    schema_results = {}
-    for i, test_url in enumerate(all_test_urls):
+        # ── PILLAR 4: AI DISCOVERABILITY (site-level) ──────────────────────────
         elapsed = round(time.time() - audit_start)
-        label = url_labels.get(test_url, test_url)
-        progress.progress(38 + round(14 * (i / n_pages)),
-            text=f"[3/6] Schema & Entity — {label} ({i+1}/{n_pages}) · {elapsed}s elapsed")
-        schema_results[test_url] = check_schema_meta(test_url)
-    schema_score = round(sum(r.get("score", 0) for r in schema_results.values()) / len(schema_results))
+        progress.progress(55, text=f"[4/7] AI Discoverability — llm.txt, AI info page, well-known files… · {elapsed}s elapsed")
+        llm_result = check_llm_discoverability(base_url, homepage_html)
+        llm_score = llm_result.get("score", 0)
 
-    # ── PILLAR 4: AI DISCOVERABILITY (site-level) ──────────────────────────
-    elapsed = round(time.time() - audit_start)
-    progress.progress(55, text=f"[4/7] AI Discoverability — llm.txt, AI info page, well-known files… · {elapsed}s elapsed")
-    llm_result = check_llm_discoverability(base_url, homepage_html)
-    llm_score = llm_result.get("score", 0)
-
-    # ── SEMANTIC HIERARCHY (all pages) ────────────────────────────────────
-    elapsed = round(time.time() - audit_start)
-    progress.progress(62, text=f"[5/7] Semantic Hierarchy — checking heading structure… · {elapsed}s elapsed")
-    semantic_results = {}
-    for test_url in all_test_urls:
-        semantic_results[test_url] = check_semantic_hierarchy(test_url)
-
-    # ── SECURITY CHECK (separate score) ───────────────────────────────────
-    elapsed = round(time.time() - audit_start)
-    progress.progress(67, text=f"[6/7] Security Check — probing sensitive paths as AI bots… · {elapsed}s elapsed (this step takes ~{t_security}s)")
-    security_result = check_security_exposure(
-        base_url,
-        robots_raw=robots_result.get("raw", ""),
-        homepage_html=homepage_html,
-    )
-    security_score = security_result.get("score", 100)
-
-    # ── LIVE BOT CRAWL (homepage) ─────────────────────────────────────────
-    bot_crawl_results = {}
-    if run_bot_crawl:
+        # ── SEMANTIC HIERARCHY (all pages) ────────────────────────────────────
         elapsed = round(time.time() - audit_start)
-        progress.progress(80, text=f"[7/7] Live Bot Crawl — sending requests as 16 AI bots… · {elapsed}s elapsed (~{t_botcrawl}s remaining)")
-        bot_crawl_results = run_live_bot_crawl(url, robots_result.get("parser"))
+        progress.progress(62, text=f"[5/7] Semantic Hierarchy — checking heading structure… · {elapsed}s elapsed")
+        semantic_results = {}
+        for test_url in all_test_urls:
+            semantic_results[test_url] = check_semantic_hierarchy(test_url)
 
-    # ── FINAL SCORING ─────────────────────────────────────────────────────
-    elapsed = round(time.time() - audit_start)
-    progress.progress(93, text=f"Calculating scores and grades… · {elapsed}s elapsed")
-    overall_result = compute_overall(
-        {"js": js_score, "robots": robots_score, "schema": schema_score, "llm": llm_score},
-        robots_missing=not robots_result.get("found", False),
-    )
-    overall = overall_result["score"]
-    overall_grade = overall_result["grade"]
+        # ── SECURITY CHECK (separate score) ───────────────────────────────────
+        elapsed = round(time.time() - audit_start)
+        progress.progress(67, text=f"[6/7] Security Check — probing sensitive paths as AI bots… · {elapsed}s elapsed (this step takes ~{t_security}s)")
+        security_result = check_security_exposure(
+            base_url,
+            robots_raw=robots_result.get("raw", ""),
+            homepage_html=homepage_html,
+        )
+        security_score = security_result.get("score", 100)
 
-    total_elapsed = round(time.time() - audit_start)
-    time.sleep(0.3)
-    progress.progress(100, text=f"Audit complete in {total_elapsed}s!")
-    time.sleep(0.5)
-    progress.empty()
+        # ── LIVE BOT CRAWL (homepage) ─────────────────────────────────────────
+        bot_crawl_results = {}
+        if run_bot_crawl:
+            elapsed = round(time.time() - audit_start)
+            progress.progress(80, text=f"[7/7] Live Bot Crawl — sending requests as 16 AI bots… · {elapsed}s elapsed (~{t_botcrawl}s remaining)")
+            bot_crawl_results = run_live_bot_crawl(url, robots_result.get("parser"))
+
+        # ── FINAL SCORING ─────────────────────────────────────────────────────
+        elapsed = round(time.time() - audit_start)
+        progress.progress(93, text=f"Calculating scores and grades… · {elapsed}s elapsed")
+        overall_result = compute_overall(
+            {"js": js_score, "robots": robots_score, "schema": schema_score, "llm": llm_score},
+            robots_missing=not robots_result.get("found", False),
+        )
+        overall = overall_result["score"]
+        overall_grade = overall_result["grade"]
+
+        total_elapsed = round(time.time() - audit_start)
+        time.sleep(0.3)
+        progress.progress(100, text=f"Audit complete in {total_elapsed}s!")
+        time.sleep(0.5)
+        progress.empty()
+        # ── Save results to session state so they survive reruns ──────────
+        st.session_state["_audit"] = {
+            "all_test_urls": all_test_urls,
+            "url_labels":    url_labels,
+            "js_results":    js_results,
+            "js_score":      js_score,
+            "robots_result": robots_result,
+            "robots_score":  robots_score,
+            "schema_results": schema_results,
+            "schema_score":  schema_score,
+            "llm_result":    llm_result,
+            "llm_score":     llm_score,
+            "semantic_results": semantic_results,
+            "security_result": security_result,
+            "security_score": security_score,
+            "bot_crawl_results": bot_crawl_results,
+            "overall":       overall,
+            "overall_grade": overall_grade,
+            "overall_result": overall_result,
+        }
+
+    # ── Unpack results (fresh audit or cached) ────────────────────────────
+    _a              = st.session_state["_audit"]
+    all_test_urls   = _a["all_test_urls"]
+    url_labels      = _a["url_labels"]
+    js_results      = _a["js_results"]
+    js_score        = _a["js_score"]
+    robots_result   = _a["robots_result"]
+    robots_score    = _a["robots_score"]
+    schema_results  = _a["schema_results"]
+    schema_score    = _a["schema_score"]
+    llm_result      = _a["llm_result"]
+    llm_score       = _a["llm_score"]
+    semantic_results = _a["semantic_results"]
+    security_result = _a["security_result"]
+    security_score  = _a["security_score"]
+    bot_crawl_results = _a["bot_crawl_results"]
+    overall         = _a["overall"]
+    overall_grade   = _a["overall_grade"]
+    overall_result  = _a["overall_result"]
+    url             = all_test_urls[0]
+    parsed          = urlparse(url)
+    base_url        = f"{parsed.scheme}://{parsed.netloc}"
+
 
     # ══════════════════════════════════════════════════════════════════════
     # RESULTS
@@ -1294,16 +1571,34 @@ if run_audit:
         js_results, llm_result, robots_result, schema_results,
         bot_crawl_results, recs,
     )
-    report_filename = f"llm_access_audit_{parsed.netloc.replace('.', '_')}_{time.strftime('%Y%m%d')}.txt"
-
-    st.download_button(
-        label="Download Full Audit Report",
-        data=report_text,
-        file_name=report_filename,
-        mime="text/plain",
-        use_container_width=True,
+    report_html = generate_report_html(
+        parsed.netloc, overall, pillar_scores_dict, url_labels,
+        js_results, llm_result, robots_result, schema_results,
+        semantic_results, bot_crawl_results, recs,
     )
-    st.caption("Plain-text report — open in any editor or print to PDF via your browser (Ctrl/Cmd + P)")
+    domain_slug = parsed.netloc.replace(".", "_")
+    date_slug   = time.strftime("%Y%m%d")
+
+    dl_col1, dl_col2 = st.columns(2)
+    with dl_col1:
+        st.download_button(
+            label="⬇ Download Offline PDF Report (HTML)",
+            data=report_html,
+            file_name=f"llm_access_audit_{domain_slug}_{date_slug}.html",
+            mime="text/html",
+            use_container_width=True,
+            type="primary",
+        )
+        st.caption("Opens in browser — use Ctrl/Cmd+P to save as PDF. All sections expanded.")
+    with dl_col2:
+        st.download_button(
+            label="⬇ Download Plain Text Report (.txt)",
+            data=report_text,
+            file_name=f"llm_access_audit_{domain_slug}_{date_slug}.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
+        st.caption("Plain text — open in any editor.")
 
     # ── FOOTER ────────────────────────────────────────────────────────────
     st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
