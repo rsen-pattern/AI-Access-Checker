@@ -85,6 +85,10 @@ PILLAR_INFO = {
         "what": "We check BAISOM Layers 3–6: accessibility (alt text, ARIA landmarks, form labels, lang attribute), content architecture (answer-first summary paragraphs, heading hierarchy, descriptive vs vague headings), internal linking depth and topic clustering, and content clarity (specific facts vs vague marketing language).",
         "why": "BAISOM Layer 4: 'AI doesn't scroll. It reads top-down and decides in milliseconds.' A summary paragraph in the first 60 words dramatically increases AI citation probability. Topic clustering — multiple pages linked around one subject — causes AI to treat your brand as THE authoritative source on that topic. Princeton KDD research found adding statistics to content increases AI visibility by up to 41%.",
     },
+    "bot_crawl": {
+        "what": "We simulate live HTTP requests to your homepage impersonating each major AI crawler user-agent — GPTBot, ClaudeBot, PerplexityBot, Google-Extended, and 11 others. We record the HTTP response code, content length, load time, robots.txt compliance, and any meta robots directives returned.",
+        "why": "A site can look open in robots.txt but still block AI bots via Cloudflare, WAF rules, or server-level rate limiting. The only way to know if AI crawlers can actually reach your content is to send a request as them. A 403 or empty response here means AI systems are silently unable to index your site — regardless of your SEO setup.",
+    },
 }
 
 # ─── AI BOT DEFINITIONS ──────────────────────────────────────────────────────
@@ -238,6 +242,17 @@ def brand_status(text, status="success"):
 
 def pillar_header(number, title, score):
     return f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;"><div><div style="font-size:11px;color:{BRAND["text_secondary"]};text-transform:uppercase;letter-spacing:1.5px;">Pillar {number}</div><div style="font-size:20px;font-weight:700;color:{BRAND["white"]};">{title}</div></div><div style="text-align:right;"><div style="font-size:28px;font-weight:800;color:{BRAND["white"]};">{score}<span style="font-size:16px;opacity:0.5;">/100</span></div></div></div>'
+
+
+def _md_to_html(text):
+    """Convert basic LLM markdown (###, **, numbered lists) to HTML for styled div injection."""
+    import re
+    text = re.sub(r'^### (.+)$', r'<h3 style="color:#fff;font-size:15px;font-weight:700;margin:14px 0 6px 0;letter-spacing:0.3px;text-transform:uppercase;">\1</h3>', text, flags=re.MULTILINE)
+    text = re.sub(r'^## (.+)$',  r'<h2 style="color:#fff;font-size:17px;font-weight:700;margin:16px 0 8px 0;">\1</h2>', text, flags=re.MULTILINE)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+    text = re.sub(r'^\d+\.\s+(.+)$', r'<div style="padding:3px 0 3px 12px;color:#e0e0e0;">\1</div>', text, flags=re.MULTILINE)
+    text = text.replace('\n\n', '<br>').replace('\n', '')
+    return text
 
 
 def pillar_explainer(pillar_key):
@@ -1333,6 +1348,7 @@ if run_audit or "_audit" in st.session_state:
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
         st.markdown("### Live Bot Crawl Results")
         st.markdown(f'{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">Tested against homepage</span>', unsafe_allow_html=True)
+        pillar_explainer("bot_crawl")
         allowed_count = sum(1 for r in bot_crawl_results.values() if r["is_allowed"])
         total_bots = len(bot_crawl_results)
         st.markdown(f'<div style="font-size:14px;color:{BRAND["text_secondary"]};margin-bottom:12px;"><span style="color:{BRAND["teal"]};font-weight:700;">{allowed_count}</span> allowed · <span style="color:{BRAND["danger"]};font-weight:700;">{total_bots - allowed_count}</span> blocked · {total_bots} total</div>', unsafe_allow_html=True)
@@ -1353,6 +1369,7 @@ if run_audit or "_audit" in st.session_state:
     st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
     st.markdown("### Semantic Hierarchy & Content Structure")
     st.markdown(f'{brand_pill("PAGE-LEVEL", BRAND["primary"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">Heading structure, semantic HTML, meta directives — checked per page</span>', unsafe_allow_html=True)
+    pillar_explainer("semantic_content")
 
     for test_url, sem_r in semantic_results.items():
         label = url_labels.get(test_url, test_url)
@@ -1513,7 +1530,7 @@ if run_audit or "_audit" in st.session_state:
     bifrost_key = get_secret("BIFROST_API_KEY", "")
     if bifrost_key:
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
-        st.markdown(f'### {brand_pill("PATTERN BRAIN", BRAND["purple"])} AI Analysis')
+        st.markdown(f'### {brand_pill("PATTERN BRAIN", BRAND["purple"])} AI Analysis', unsafe_allow_html=True)
         st.caption("Powered by Pattern's AI via Bifrost · openai/gpt-4o-mini")
 
         with st.spinner("Generating Pattern Brain analysis..."):
@@ -1557,7 +1574,7 @@ if run_audit or "_audit" in st.session_state:
             brain_analysis = pattern_brain_analysis(parsed.netloc, all_results_for_brain, get_secret)
 
         if brain_analysis:
-            st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:12px;padding:20px 24px;margin:8px 0;"><div style="color:{BRAND["white"]};font-size:14px;line-height:1.7;white-space:pre-wrap;">{brain_analysis}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:12px;padding:20px 24px;margin:8px 0;"><div style="color:{BRAND["white"]};font-size:14px;line-height:1.7;">{_md_to_html(brain_analysis)}</div></div>', unsafe_allow_html=True)
         else:
             st.caption("Pattern Brain analysis unavailable — check BIFROST_API_KEY in Streamlit secrets.")
 
