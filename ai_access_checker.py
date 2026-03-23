@@ -319,7 +319,314 @@ def check_semantic_hierarchy(url):
     return results
 
 def generate_report_html(domain, overall, pillar_scores, url_labels, js_results, llm_result, robots_result, schema_results, semantic_results, bot_crawl_results, recs):
-    """Generate a self-contained branded HTML report — all sections expanded, printable to PDF."""
+    """Generate a self-contained branded HTML report matching the live app design."""
+    B = BRAND  # shorthand
+
+    def _score_color(s):
+        return B["teal"] if s >= 75 else B["primary"] if s >= 50 else B["warning"] if s >= 35 else B["danger"]
+
+    def _grade(s):
+        for t, (l, lb) in sorted({90:("A","Excellent"),75:("B","Good"),60:("C","Fair"),40:("D","Needs Work"),0:("F","Critical")}.items(), reverse=True):
+            if s >= t: return l, lb
+        return "F", "Critical"
+
+    def _score_bar(score):
+        c = _score_color(score)
+        return f'<div style="background:{B["border"]};border-radius:8px;height:8px;margin:8px 0 4px 0;"><div style="width:{score}%;background:linear-gradient(90deg,{B["purple"]},{c});height:8px;border-radius:8px;"></div></div>'
+
+    def _pill(text, color):
+        return f'<span style="display:inline-block;background:{color}20;color:{color};padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700;letter-spacing:0.5px;margin-right:6px;">{text}</span>'
+
+    def _status(text, status):
+        c = {"success":B["teal"],"warning":B["warning"],"danger":B["danger"],"info":B["primary"]}.get(status, B["primary"])
+        return f'<div style="display:flex;align-items:center;gap:8px;margin:4px 0;"><div style="width:8px;height:8px;border-radius:50%;background:{c};flex-shrink:0;"></div><span style="color:{B["white"]};font-size:13px;">{text}</span></div>'
+
+    def _card(content, accent=None):
+        border = f"border-left:3px solid {accent};" if accent else ""
+        return f'<div style="background:{B["bg_card"]};border:1px solid {B["border"]};{border}border-radius:{"0 10px 10px 0" if accent else "10px"};padding:14px 18px;margin:8px 0;">{content}</div>'
+
+    def _pillar_header(num, title, score):
+        sc = _score_color(score)
+        return f'''<div style="margin-top:36px;">
+  <div style="font-size:10px;color:{B["text_secondary"]};text-transform:uppercase;letter-spacing:2px;margin-bottom:2px;">Pillar {num}</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;">
+    <div style="font-size:22px;font-weight:800;color:{B["white"]};">{title}</div>
+    <div style="font-size:28px;font-weight:800;color:{B["white"]};">{score}<span style="font-size:14px;opacity:0.4;">/100</span></div>
+  </div>
+  {_score_bar(score)}
+  <div style="height:1px;background:linear-gradient(90deg,{B["purple"]},{B["primary"]},transparent);margin-bottom:16px;"></div>
+</div>'''
+
+    def _section_header(title, level="SITE-LEVEL"):
+        color = B["purple"] if level == "SITE-LEVEL" else B["primary"]
+        return f'<div style="margin-top:36px;"><div style="font-size:22px;font-weight:800;color:{B["white"]};margin-bottom:4px;">{title}</div>{_pill(level, color)}<div style="height:1px;background:linear-gradient(90deg,{B["purple"]},{B["primary"]},transparent);margin:10px 0 16px 0;"></div></div>'
+
+    def _page_block(label, score=None):
+        sc_html = ""
+        if score is not None:
+            sc = _score_color(score)
+            sc_html = f' <span style="color:{sc};font-size:14px;">{score}/100</span>'
+        return f'<div style="font-size:16px;font-weight:700;color:{B["white"]};margin:20px 0 6px 0;">{label}{sc_html}</div>'
+
+    sorted_pillars = sorted(pillar_scores.items(), key=lambda x: x[1])
+    weakest, strongest = sorted_pillars[0], sorted_pillars[-1]
+    grade_letter, grade_label = _grade(overall)
+    grade_color = _score_color(overall)
+
+    # ── Pillar score rows ────────────────────────────────────────────────
+    pillar_rows = ""
+    for i, (name, score) in enumerate(pillar_scores.items()):
+        g, _ = _grade(score)
+        c = _score_color(score)
+        bg = B["bg_surface"] if i % 2 == 0 else B["bg_card"]
+        bar = f'<div style="background:{B["border"]};border-radius:4px;height:6px;width:100%;"><div style="width:{score}%;background:linear-gradient(90deg,{B["purple"]},{c});height:6px;border-radius:4px;"></div></div>'
+        pillar_rows += f'<tr style="background:{bg};"><td style="padding:10px 16px;color:{B["white"]};font-weight:600;">{name}</td><td style="padding:10px 16px;width:200px;">{bar}</td><td style="padding:10px 16px;text-align:center;font-weight:700;color:{c};">{score}%</td><td style="padding:10px 16px;text-align:center;color:{c};font-weight:700;">{g}</td></tr>'
+
+    # ── Pillar 1: JS Rendering ───────────────────────────────────────────
+    js_sec = _pillar_header(1, "JavaScript Rendering", pillar_scores.get("JS Rendering", 0))
+    js_sec += _pill("PAGE-LEVEL", B["primary"])
+    js_sec += f'<span style="color:{B["text_secondary"]};font-size:12px;"> Checked on each of your {len(js_results)} pages</span>'
+    for test_url, js_r in js_results.items():
+        lbl = url_labels.get(test_url, test_url)
+        if js_r.get("error"):
+            js_sec += _card(f'<span style="color:{B["danger"]};">{lbl}: ERROR — {js_r["error"]}</span>'); continue
+        score = js_r.get("score", 0)
+        js_sec += _page_block(lbl, score)
+        comp = js_r.get("comparison")
+        if comp:
+            js_sec += f'<div style="font-weight:700;color:{B["white"]};font-size:14px;margin:12px 0 6px 0;">HTML vs JavaScript — What AI Crawlers Miss:</div>'
+            js_sec += f'<table style="width:100%;border-collapse:collapse;font-size:13px;"><tr style="background:{B["bg_surface"]};"><th style="padding:7px 10px;text-align:left;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;letter-spacing:1px;">Content</th><th style="padding:7px 10px;text-align:center;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;">HTML (Crawler)</th><th style="padding:7px 10px;text-align:center;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;">JS (Browser)</th><th style="padding:7px 10px;text-align:left;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;">Impact</th></tr>'
+            for c in comp["comparison"]:
+                bg = f"{B['danger']}15" if c["status"] == "missing" else "transparent"
+                sc = B["danger"] if c["status"] == "missing" else B["teal"]
+                impact = f'<span style="color:{sc};font-weight:600;">{"MISSING" if c["status"] == "missing" else "OK"}</span>'
+                js_sec += f'<tr style="background:{bg};border-bottom:1px solid {B["border"]};"><td style="padding:5px 10px;color:{B["white"]};">{c["name"]}</td><td style="padding:5px 10px;text-align:center;color:{sc};">{c["html_val"]}</td><td style="padding:5px 10px;text-align:center;color:{B["teal"]};">{c["js_val"]}</td><td style="padding:5px 10px;">{impact}</td></tr>'
+            js_sec += '</table>'
+            html_t = comp["html_summary"]["text_content_length"]
+            js_t   = comp["js_summary"]["text_content_length"]
+            if js_t > html_t:
+                pct = round(html_t / max(js_t, 1) * 100)
+                pct_c = B["danger"] if pct < 30 else B["warning"] if pct < 70 else B["teal"]
+                js_sec += _card(f'<div style="font-size:10px;color:{B["text_secondary"]};text-transform:uppercase;letter-spacing:1px;">Content Visibility</div><div style="font-size:22px;font-weight:800;color:{pct_c};">{pct}% <span style="font-size:13px;opacity:0.5;">of content visible to AI</span></div><div style="font-size:12px;color:{B["text_secondary"]};">HTML: {html_t:,} chars · JS-rendered: {js_t:,} chars · Hidden: {js_t-html_t:,} chars</div>')
+        if js_r.get("frameworks"):
+            for name2, sev, note in js_r["frameworks"]:
+                js_sec += _status(f"<strong>{name2}</strong> ({sev}) — {note}", "danger" if sev == "high" else "warning")
+        if not comp and js_r.get("risk_factors"):
+            for rf in js_r["risk_factors"]:
+                js_sec += _status(rf, "warning")
+
+    # ── Pillar 2: Robots & Crawlability ─────────────────────────────────
+    rob_sec = _pillar_header(2, "Robots.txt &amp; Crawler Access", pillar_scores.get("Robots.txt", 0))
+    rob_sec += _pill("SITE-LEVEL", B["purple"])
+    rob_sec += f'<span style="color:{B["text_secondary"]};font-size:12px;"> Checked once — controls all crawler access</span><br><br>'
+    if robots_result.get("found"):
+        rob_sec += _status("robots.txt found", "success")
+        ai_res = robots_result.get("ai_agent_results", robots_result.get("ai_results", {}))
+        rob_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 6px 0;">AI Agent Access:</div>'
+        for bn, info in ai_res.items():
+            av = info.get("robots_allowed", info.get("allowed"))
+            rob_sec += _status(f"<strong>{bn}</strong>: {'Allowed' if av is True else 'BLOCKED' if av is False else 'Unknown'}", "success" if av is True else "danger" if av is False else "warning")
+        if robots_result.get("sitemaps"):
+            rob_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 6px 0;">Sitemaps ({len(robots_result["sitemaps"])}):</div>'
+            for sm in robots_result["sitemaps"]:
+                rob_sec += _status(sm, "success")
+        if robots_result.get("blocked_resources"):
+            rob_sec += _status(f"CSS/JS blocked: {', '.join(robots_result['blocked_resources'])}", "danger")
+        else:
+            rob_sec += _status("CSS/JS not blocked — AI agents can render pages", "success")
+        exposed = [(p, r) for p, r in robots_result.get("sensitive_paths", {}).items() if not r.get("blocked", not r.get("accessible_per_robots", False))]
+        if exposed:
+            rob_sec += f'<div style="font-weight:600;color:{B["danger"]};margin:12px 0 6px 0;">Sensitive Paths Exposed ({len(exposed)}):</div>'
+            for path, _ in exposed:
+                rob_sec += _status(path, "warning")
+    else:
+        rob_sec += _status("No robots.txt found", "danger")
+
+    # ── Pillar 3: Schema & Entity ────────────────────────────────────────
+    schema_sec = _pillar_header(3, "Schema &amp; Entity", pillar_scores.get("Schema", 0))
+    schema_sec += _pill("PAGE-LEVEL", B["primary"])
+    schema_sec += f'<span style="color:{B["text_secondary"]};font-size:12px;"> Checked on each of your {len(schema_results)} pages</span>'
+    for test_url, sr in schema_results.items():
+        lbl = url_labels.get(test_url, test_url)
+        if sr.get("error"):
+            schema_sec += _card(f'<span style="color:{B["danger"]};">{lbl}: ERROR</span>'); continue
+        schema_data = sr.get("schema", {})
+        schemas = schema_data.get("schemas", [])
+        types = schema_data.get("types", [])
+        validations = schema_data.get("validations", [])
+        grade2 = sr.get("grade", {})
+        gl = grade2.get("letter", "?") if isinstance(grade2, dict) else "?"
+        sc = sr.get("score", 0)
+        schema_sec += _page_block(lbl, sc)
+        if types:
+            schema_sec += '<div style="margin:6px 0;">' + "".join(_pill(t, B["chart"][i % len(B["chart"])]) for i, t in enumerate(types)) + '</div>'
+        ess_found   = schema_data.get("essential_found", [])
+        ess_missing = schema_data.get("essential_missing", [])
+        if ess_found:
+            schema_sec += _status(f"Essential found: {', '.join(ess_found)}", "success")
+        if ess_missing:
+            schema_sec += _status(f"Essential missing: {', '.join(ess_missing)}", "warning")
+        for v in validations:
+            comp2 = v.get("completeness", 0)
+            st3 = "success" if comp2 >= 80 else "warning" if comp2 >= 50 else "danger"
+            schema_sec += _status(f"<strong>{v.get('type','?')}</strong>: {comp2}% complete" + (f" — Missing: {', '.join(v['missing'])}" if v.get('missing') else ""), st3)
+        meta_data = sr.get("meta", {})
+        if meta_data:
+            title = meta_data.get("title", "")
+            desc_len = meta_data.get("desc_len", 0)
+            schema_sec += _status(f"Title ({len(title)} chars): {title[:80]}", "success" if title else "danger")
+            schema_sec += _status(f"Meta description: {desc_len} chars", "success" if 100 <= desc_len <= 160 else "warning")
+            canon = meta_data.get("canonical", "")
+            schema_sec += _status(f"Canonical: {canon[:80] or 'Missing'}", "success" if canon else "warning")
+        if not schemas:
+            schema_sec += _status("No Schema.org structured data found", "warning")
+
+    # ── Pillar 4: AI Discoverability ─────────────────────────────────────
+    llm_sec = _pillar_header(4, "AI Discoverability", pillar_scores.get("LLM.txt", 0))
+    llm_sec += _pill("SITE-LEVEL", B["purple"])
+    llm_sec += f'<span style="color:{B["text_secondary"]};font-size:12px;"> llm.txt files + AI Info Page</span><br><br>'
+    llm_txt_data = llm_result.get("llm_txt", llm_result.get("files", {}))
+    llm_sec += f'<div style="font-weight:600;color:{B["white"]};margin:8px 0 6px 0;">llm.txt Files:</div>'
+    for path, info in llm_txt_data.items():
+        llm_sec += _status(f"{path}: {'Found' if info.get('found') else 'Not found'}", "success" if info.get("found") else "warning")
+    ai_info = llm_result.get("ai_info_page", {})
+    llm_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 6px 0;">AI Info Page:</div>'
+    if ai_info.get("found"):
+        llm_sec += _status(f"Found: {ai_info.get('url','')}", "success")
+        llm_sec += _status(f"Linked from footer: {'Yes' if ai_info.get('linked_from_footer') else 'No'}", "success" if ai_info.get("linked_from_footer") else "danger")
+        if "indexable" in ai_info:
+            llm_sec += _status(f"Indexable: {'Yes' if ai_info['indexable'] else 'No — has noindex'}", "success" if ai_info.get("indexable") else "danger")
+    else:
+        llm_sec += _status("No AI Info Page found at /ai-info or similar", "warning")
+    wellknown = llm_result.get("wellknown", {})
+    if wellknown:
+        llm_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 6px 0;">AI Policy Files (/.well-known/):</div>'
+        for path, info in wellknown.items():
+            llm_sec += _status(path, "success" if info.get("found") else "info")
+
+    # ── Semantic Hierarchy ───────────────────────────────────────────────
+    sem_sec = _section_header("Semantic Hierarchy &amp; Content Structure", "PAGE-LEVEL")
+    for test_url, sem_r in semantic_results.items():
+        lbl = url_labels.get(test_url, test_url)
+        if sem_r.get("error"):
+            sem_sec += _card(f'<span style="color:{B["danger"]};">{lbl}: ERROR</span>'); continue
+        sem_sec += _page_block(lbl)
+        hier_ok = sem_r.get("hierarchy_ok", True)
+        sem_sec += _status(f"Heading hierarchy: {'Valid — no skipped levels' if hier_ok else 'Issues — skipped levels detected'}", "success" if hier_ok else "warning")
+        sem_elems = sem_r.get("semantic_elements", {})
+        if sem_elems:
+            for tag, count in sem_elems.items():
+                sem_sec += _status(f"&lt;{tag}&gt;: {count}", "success")
+        else:
+            sem_sec += _status("No semantic HTML5 elements found", "warning")
+        meta_tags = sem_r.get("meta_tags", [])
+        for tag in meta_tags:
+            sem_sec += _status(f'{tag["name"]}: {tag["content"]}', "info")
+        nosnip = sem_r.get("nosnippet_elements", 0)
+        sem_sec += _status(f"data-nosnippet: {nosnip} element(s)", "info")
+        html_len = sem_r.get("html_length", 0)
+        text_len = sem_r.get("text_length", 0)
+        if html_len > 0:
+            ratio = text_len / html_len * 100
+            sem_sec += _status(f"Text-to-HTML ratio: {ratio:.1f}%", "success" if ratio >= 15 else "warning")
+
+    # ── Live Bot Crawl ───────────────────────────────────────────────────
+    bot_sec = ""
+    if bot_crawl_results:
+        bot_sec = _section_header("Live Bot Crawl Results", "SITE-LEVEL")
+        allowed_n = sum(1 for r in bot_crawl_results.values() if r.get("is_allowed"))
+        total_n = len(bot_crawl_results)
+        bot_sec += f'<div style="font-size:14px;color:{B["text_secondary"]};margin-bottom:12px;"><span style="color:{B["teal"]};font-weight:700;">{allowed_n}</span> allowed · <span style="color:{B["danger"]};font-weight:700;">{total_n - allowed_n}</span> blocked · {total_n} total</div>'
+        for company in list(dict.fromkeys(r["company"] for r in bot_crawl_results.values())):
+            cr = {k: v for k, v in bot_crawl_results.items() if v["company"] == company}
+            ca = sum(1 for r in cr.values() if r.get("is_allowed"))
+            bot_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 4px 0;">{company} — {ca}/{len(cr)} allowed</div>'
+            for bn, r in cr.items():
+                if r.get("error"):
+                    bot_sec += _status(f"<strong>{bn}</strong>: Error — {r['error']}", "danger")
+                else:
+                    bot_sec += _status(f"<strong>{bn}</strong>: {'Allowed' if r['is_allowed'] else 'BLOCKED'} — HTTP {r['status_code']} · {r['content_length']:,} chars · {r['load_time']}s", "success" if r["is_allowed"] else "danger")
+
+    # ── Recommendations ──────────────────────────────────────────────────
+    rec_sec = f'<div style="margin-top:36px;font-size:22px;font-weight:800;color:{B["white"]};margin-bottom:4px;">Priority Recommendations</div><div style="height:1px;background:linear-gradient(90deg,{B["purple"]},{B["primary"]},transparent);margin-bottom:16px;"></div>'
+    for i, (status, pillar, text) in enumerate(recs, 1):
+        c = B["danger"] if status == "danger" else B["warning"]
+        pill = _pill(pillar, c)
+        rec_sec += f'<div style="background:{B["bg_card"]};border:1px solid {B["border"]};border-left:3px solid {c};border-radius:0 10px 10px 0;padding:14px 18px;margin:8px 0;">{pill}<div style="color:{B["white"]};font-size:14px;margin-top:6px;">{text}</div></div>'
+
+    # ── Logo SVG (inline for offline use) ────────────────────────────────
+    logo_svg = PATTERN_LOGO_SVG.replace("width=\"180\"", "width=\"140\"").replace("height=\"36\"", "height=\"28\"")
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Pattern LLM Access Audit — {domain}</title>
+<style>
+  @media print {{ body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }} .no-print {{ display:none; }} }}
+  * {{ box-sizing: border-box; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:{B["bg_dark"]}; color:{B["white"]}; margin:0; padding:32px 40px; line-height:1.6; font-size:14px; }}
+  h1, h2, h3 {{ margin-top:0; color:{B["white"]}; }}
+  table {{ border-collapse:collapse; width:100%; }}
+  a {{ color:{B["primary"]}; }}
+  @page {{ margin:15mm; size:A4; }}
+</style>
+</head>
+<body>
+
+<!-- ── HEADER ── -->
+<div style="text-align:center;padding:24px 0 20px;border-bottom:3px solid transparent;border-image:linear-gradient(90deg,{B["purple"]},{B["primary"]}) 1;margin-bottom:28px;">
+  <div style="margin-bottom:10px;">{logo_svg}</div>
+  <div style="font-size:11px;text-transform:uppercase;letter-spacing:3px;color:{B["text_secondary"]};margin-bottom:4px;">Full LLM Access Audit</div>
+  <div style="color:{B["text_secondary"]};font-size:13px;margin-top:4px;">{domain} &nbsp;·&nbsp; Generated {time.strftime("%Y-%m-%d %H:%M UTC")}</div>
+</div>
+
+<!-- ── OVERALL SCORE ── -->
+<div style="display:flex;gap:20px;margin-bottom:28px;align-items:flex-start;flex-wrap:wrap;">
+  <div style="background:{B["bg_card"]};border:1px solid {B["border"]};border-radius:14px;padding:24px 32px;text-align:center;min-width:160px;">
+    <div style="font-size:10px;text-transform:uppercase;letter-spacing:2px;color:{B["text_secondary"]};margin-bottom:6px;">LLM Access Audit</div>
+    <div style="font-size:52px;font-weight:800;color:{grade_color};line-height:1;">{overall}%</div>
+    <div style="font-size:13px;color:{B["text_secondary"]};margin:4px 0;">Overall AI Readiness</div>
+    <div style="font-size:16px;font-weight:700;color:{grade_color};">{grade_letter} — {grade_label}</div>
+  </div>
+  <div style="flex:1;min-width:280px;">
+    <table style="width:100%;border-radius:10px;overflow:hidden;">
+      <tr style="background:{B["bg_surface"]};">
+        <th style="padding:8px 14px;text-align:left;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;letter-spacing:1px;">Pillar</th>
+        <th style="padding:8px 14px;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;letter-spacing:1px;width:160px;">Score Bar</th>
+        <th style="padding:8px 14px;text-align:center;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;letter-spacing:1px;width:60px;">%</th>
+        <th style="padding:8px 14px;text-align:center;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;letter-spacing:1px;width:50px;">Grade</th>
+      </tr>
+      {pillar_rows}
+    </table>
+    <div style="margin-top:10px;font-size:13px;">
+      <span style="color:{B["teal"]};font-weight:600;">▲ Strongest: {strongest[0]} ({strongest[1]}%)</span>
+      &nbsp;·&nbsp;
+      <span style="color:{B["danger"]};font-weight:600;">▼ Priority Focus: {weakest[0]} ({weakest[1]}%)</span>
+    </div>
+  </div>
+</div>
+
+{js_sec}
+{rob_sec}
+{schema_sec}
+{llm_sec}
+{sem_sec}
+{bot_sec}
+{rec_sec}
+
+<!-- ── FOOTER ── -->
+<div style="text-align:center;margin-top:48px;padding-top:16px;border-top:1px solid {B["border"]};color:{B["text_secondary"]};font-size:12px;">
+  {logo_svg}
+  <div style="margin-top:8px;">Pattern LLM Access Checker &nbsp;·&nbsp; Full LLM Access Audit &nbsp;·&nbsp; pattern.com</div>
+</div>
+
+</body>
+</html>"""
+    return html
+
+
     grade_map = {90: ("A", "Excellent"), 75: ("B", "Good"), 60: ("C", "Fair"), 40: ("D", "Needs Work"), 0: ("F", "Critical")}
     def _grade(s):
         for threshold, (letter, label) in sorted(grade_map.items(), reverse=True):
@@ -956,6 +1263,19 @@ if run_audit or "_audit" in st.session_state:
     parsed          = urlparse(url)
     base_url        = f"{parsed.scheme}://{parsed.netloc}"
 
+    # Compute semantic hierarchy score from per-page results (no pre-computed score)
+    _sem_scores = []
+    for _sr in semantic_results.values():
+        if not _sr.get("error"):
+            _ps = 100
+            if not _sr.get("hierarchy_ok", True):              _ps -= 30
+            if not _sr.get("semantic_elements"):               _ps -= 20
+            _hl = _sr.get("html_length", 0)
+            _tl = _sr.get("text_length", 0)
+            if _hl > 0 and (_tl / _hl * 100) < 15:            _ps -= 20
+            if _sr.get("nosnippet_elements", 0) > 5:           _ps -= 10
+            _sem_scores.append(max(0, _ps))
+    semantic_score = round(sum(_sem_scores) / len(_sem_scores)) if _sem_scores else 0
 
     # ══════════════════════════════════════════════════════════════════════
     # RESULTS
@@ -1007,7 +1327,14 @@ if run_audit or "_audit" in st.session_state:
             st.metric("Overall Grade", f"{grade_letter} ({grade_label})")
 
     # ── STRONGEST / WEAKEST PILLAR ────────────────────────────────────────
-    pillar_scores = {"JS Rendering": js_score, "Robots & Crawlability": robots_score, "Schema & Entity": schema_score, "AI Discoverability": llm_score}
+    pillar_scores = {
+        "JS Rendering":       js_score,
+        "Robots & Crawl":     robots_score,
+        "Schema & Entity":    schema_score,
+        "AI Discoverability": llm_score,
+        "Semantic Hierarchy": semantic_score,
+        "Security":           security_score,
+    }
     sorted_pillars = sorted(pillar_scores.items(), key=lambda x: x[1])
     weakest_name, weakest_sc = sorted_pillars[0]
     strongest_name, strongest_sc = sorted_pillars[-1]
@@ -1582,7 +1909,14 @@ if run_audit or "_audit" in st.session_state:
     st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
     st.markdown("### Download Report")
 
-    pillar_scores_dict = {"JS Rendering": js_score, "LLM.txt": llm_score, "Robots.txt": robots_score, "Schema": schema_score}
+    pillar_scores_dict = {
+        "JS Rendering":       js_score,
+        "Robots & Crawl":     robots_score,
+        "Schema & Entity":    schema_score,
+        "AI Discoverability": llm_score,
+        "Semantic Hierarchy": semantic_score,
+        "Security":           security_score,
+    }
     report_text = generate_report_text(
         parsed.netloc, overall, pillar_scores_dict, url_labels,
         js_results, llm_result, robots_result, schema_results,
