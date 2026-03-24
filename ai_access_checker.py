@@ -84,8 +84,8 @@ PILLAR_INFO = {
         "why": "Schema is the machine-readable 'entity card' that feeds both Google's Knowledge Graph and LLM entity understanding. Products without GTINs are excluded or deprioritised by AI shopping agents — research shows 60% of ecommerce catalogs have missing GTINs. Organization sameAs connects your site to your LinkedIn, Wikipedia, and social profiles, creating the consistent entity presence AI systems use to verify and trust your brand.",
     },
     "semantic_content": {
-        "what": "We check BAISOM Layers 3–6: accessibility (alt text, ARIA landmarks, form labels, lang attribute), content architecture (answer-first summary paragraphs, heading hierarchy, descriptive vs vague headings), internal linking depth and topic clustering, and content clarity (specific facts vs vague marketing language).",
-        "why": "BAISOM Layer 4: 'AI doesn't scroll. It reads top-down and decides in milliseconds.' A summary paragraph in the first 60 words dramatically increases AI citation probability. Topic clustering — multiple pages linked around one subject — causes AI to treat your brand as THE authoritative source on that topic. Princeton KDD research found adding statistics to content increases AI visibility by up to 41%.",
+        "what": "We check page structure signals that AI models rely on: heading hierarchy (H1→H2→H3 in logical order), semantic HTML elements (article, section, nav), accessibility attributes (alt text, lang, ARIA landmarks), whether pages open with a clear summary paragraph, and content quality (specific facts and figures vs vague marketing language). Each page in your audit is checked individually.",
+        "why": "AI models read pages top-down and decide what to cite within the first few hundred tokens. A clear heading hierarchy tells the model what a page is about before it reads the body. Pages that open with a concise summary are significantly more likely to be quoted in AI responses. Princeton KDD research found that pages with specific statistics see up to 41% higher AI visibility — vague claims get skipped.",
     },
     "bot_crawl": {
         "what": "We simulate live HTTP requests to your homepage impersonating each major AI crawler user-agent — GPTBot, ClaudeBot, PerplexityBot, Google-Extended, and 11 others. We record the HTTP response code, content length, load time, robots.txt compliance, and any meta robots directives returned.",
@@ -235,9 +235,12 @@ def save_audit_to_db(domain, overall, pillar_scores_dict, audited_urls, full_res
         }
         if full_results is not None:
             row["full_results"] = _sanitise_for_db(full_results)
-        sb.table("audits").insert(row).execute()
+        result = sb.table("audits").insert(row).execute()
+        if result.data:
+            return result.data[0].get("id")
     except Exception:
         pass  # Never crash the app due to a DB write failure
+    return None
 
 
 def load_audit_history(domain=None, limit=10):
@@ -626,7 +629,10 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
         if "indexable" in ai_info:
             llm_sec += _status(f"Indexable: {'Yes' if ai_info['indexable'] else 'No — has noindex'}", "success" if ai_info.get("indexable") else "danger")
     else:
-        llm_sec += _status("No AI Info Page found at /ai-info or similar", "warning")
+        if ai_info.get("redirects"):
+            llm_sec += _status("AI Info Page URL redirects elsewhere — page does not exist", "danger")
+        else:
+            llm_sec += _status("No AI Info Page found at /ai-info or similar", "warning")
     wellknown = llm_result.get("wellknown", {})
     if wellknown:
         llm_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 6px 0;">AI Policy Files (/.well-known/):</div>'
@@ -930,7 +936,10 @@ st.markdown(f'<div style="text-align:center;padding:0.3rem 0;"><span style="font
 st.markdown(f'<div style="text-align:center;color:{BRAND["text_secondary"]};font-size:0.9rem;margin-bottom:1.5rem;">Full LLM Access Audit · JavaScript Rendering · LLM.txt · Robots.txt · Schema</div>', unsafe_allow_html=True)
 
 # ── SHARED LINK: load audit from ?audit=<id> query param ─────────────────────
-# The UUID is unguessable so no additional auth is required to view a shared link.
+# Auth is intentionally NOT required here. Audit IDs are UUID v4 (122 bits of
+# entropy) and shareable links are a supported workflow — anyone with the link
+# can view the report without signing in. If private-by-default is ever needed,
+# re-add `and is_history_authenticated()` to the condition below.
 # Reload if the requested audit ID differs from the currently loaded one.
 _qp_audit_id = st.query_params.get("audit")
 _current_audit_id = st.session_state.get("_loaded_audit_id")
@@ -944,6 +953,11 @@ if _qp_audit_id and _qp_audit_id != _current_audit_id:
         _dt = (_qp_row.get("audited_at") or "")[:10]
         _sc = _qp_row.get("overall_score", 0)
         st.session_state["_loaded_from_history"] = f"{_d} · {_dt} · {_sc}%"
+    elif _qp_row:
+        # Row found but full_results is missing (old save or failed write).
+        # Clear the stale param so the user isn't stuck in a redirect loop.
+        st.query_params.pop("audit", None)
+        st.warning("The shared report could not be loaded (saved data is incomplete). Please run a new audit.")
 
 tab_audit, tab_history = st.tabs(["\U0001f50d  New Audit", "\U0001f4cb  Past Audits"])
 with tab_audit:
@@ -1109,11 +1123,15 @@ with tab_history:
                         st.session_state["_loaded_from_history"] = _label
                         if _audit_id:
                             st.query_params["audit"] = str(_audit_id)
+                            st.session_state["_loaded_audit_id"] = str(_audit_id)
                         st.rerun()
                 with _share_col:
                     if _audit_id and _has_full:
                         if st.button("🔗", key=f"share_{_audit_id}", help="Set shareable link in address bar"):
                             st.query_params["audit"] = str(_audit_id)
+                            # Keep _loaded_audit_id in sync so the top-of-script
+                            # ?audit= reload guard doesn't swap the displayed results.
+                            st.session_state["_loaded_audit_id"] = str(_audit_id)
                             st.session_state[f"_shared_{_audit_id}"] = True
                         if st.session_state.get(f"_shared_{_audit_id}"):
                             st.markdown(f'<div style="font-size:10px;color:{BRAND["teal"]};">URL updated ✓</div>', unsafe_allow_html=True)
@@ -1210,6 +1228,9 @@ with tab_history:
 if run_audit or "_audit" in st.session_state:
     if run_audit:
         st.session_state.pop("_audit", None)
+        st.session_state.pop("_loaded_audit_id", None)
+        st.session_state.pop("_loaded_from_history", None)
+        st.query_params.pop("audit", None)
         # Validate all 7 URLs are provided
         missing = [name for name, u in all_url_inputs.items() if not u or not u.strip()]
         if missing:
@@ -1393,23 +1414,23 @@ if run_audit or "_audit" in st.session_state:
 
     # ── Unpack results (fresh audit or cached) ────────────────────────────
     _a              = st.session_state["_audit"]
-    all_test_urls   = _a["all_test_urls"]
-    url_labels      = _a["url_labels"]
-    js_results      = _a["js_results"]
-    js_score        = _a["js_score"]
-    robots_result   = _a["robots_result"]
-    robots_score    = _a["robots_score"]
-    schema_results  = _a["schema_results"]
-    schema_score    = _a["schema_score"]
-    llm_result      = _a["llm_result"]
-    llm_score       = _a["llm_score"]
-    semantic_results = _a["semantic_results"]
-    security_result = _a["security_result"]
-    security_score  = _a["security_score"]
-    bot_crawl_results = _a["bot_crawl_results"]
-    overall         = _a["overall"]
-    overall_grade   = _a["overall_grade"]
-    overall_result  = _a["overall_result"]
+    all_test_urls   = _a.get("all_test_urls", [])
+    url_labels      = _a.get("url_labels", {})
+    js_results      = _a.get("js_results", {})
+    js_score        = _a.get("js_score", 0)
+    robots_result   = _a.get("robots_result", {"found": False, "score": 0})
+    robots_score    = _a.get("robots_score", 0)
+    schema_results  = _a.get("schema_results", {})
+    schema_score    = _a.get("schema_score", 0)
+    llm_result      = _a.get("llm_result", {})
+    llm_score       = _a.get("llm_score", 0)
+    semantic_results = _a.get("semantic_results", {})
+    security_result = _a.get("security_result", {"found": False, "score": 0})
+    security_score  = _a.get("security_score", 0)
+    bot_crawl_results = _a.get("bot_crawl_results", {})
+    overall         = _a.get("overall", 0)
+    overall_grade   = _a.get("overall_grade", "?")
+    overall_result  = _a.get("overall_result", {"score": overall, "grade": overall_grade})
     url             = all_test_urls[0]
     parsed          = urlparse(url)
     base_url        = f"{parsed.scheme}://{parsed.netloc}"
@@ -1427,10 +1448,13 @@ if run_audit or "_audit" in st.session_state:
             if _sr.get("nosnippet_elements", 0) > 5:           _ps -= 10
             _sem_scores.append(max(0, _ps))
     semantic_score = round(sum(_sem_scores) / len(_sem_scores)) if _sem_scores else 0
+    # Keep _audit in sync so every path (fresh run, history load, shared link)
+    # has the same key set.
+    st.session_state["_audit"]["semantic_score"] = semantic_score
 
     # ── Save new audit to Supabase (fresh runs only) ──────────────────────
     if run_audit:
-        save_audit_to_db(
+        _saved_id = save_audit_to_db(
             domain=parsed.netloc,
             overall=overall,
             pillar_scores_dict={
@@ -1463,6 +1487,11 @@ if run_audit or "_audit" in st.session_state:
                 "overall_result":    overall_result,
             },
         )
+        if _saved_id:
+            st.query_params["audit"] = str(_saved_id)
+            st.session_state["_loaded_audit_id"] = str(_saved_id)
+        elif get_supabase() is None:
+            st.info("Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets to save audits and generate shareable links.")
 
     with tab_audit:
         # ══════════════════════════════════════════════════════════════════════
@@ -1857,7 +1886,10 @@ if run_audit or "_audit" in st.session_state:
             if "is_simple_html" in ai_info:
                 st.markdown(brand_status(f"Simple HTML: {'Yes' if ai_info['is_simple_html'] else 'Heavy JS — should be simple for AI'}", "success" if ai_info.get("is_simple_html") else "warning"), unsafe_allow_html=True)
         else:
-            st.markdown(brand_status("No AI Info Page found at /ai-info, /llm-info, or similar", "warning"), unsafe_allow_html=True)
+            if ai_info.get("redirects"):
+                st.markdown(brand_status("AI Info Page URL redirects elsewhere — page does not exist", "danger"), unsafe_allow_html=True)
+            else:
+                st.markdown(brand_status("No AI Info Page found at /ai-info, /llm-info, or similar", "warning"), unsafe_allow_html=True)
             st.info("💡 Create an **AI Info Page** at `/ai-info` — your brand's official fact sheet for AI. Include brand basics, key products, FAQs, and a 'Last Updated' date. Link it from your footer. Keep it simple HTML.")
 
         # ScoreBuilder rubric

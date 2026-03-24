@@ -1459,6 +1459,15 @@ def check_llm_discoverability(base_url, homepage_html):
         u = urljoin(base_url, path)
         r, e = fetch(u, timeout=10)
         if r and r.status_code == 200:
+            # Reject if the server redirected us away from the intended path.
+            # requests follows redirects by default, so r.url is the final URL.
+            # If it no longer contains the path we requested, the page doesn't
+            # exist — it just redirected to the homepage or a catch-all.
+            if r.history:
+                final_path = r.url.split("?")[0].rstrip("/")
+                expected_path = u.split("?")[0].rstrip("/")
+                if not final_path.endswith(path.rstrip("/")):
+                    continue  # redirected away — not a real AI info page
             text = r.text.strip()
             if len(text) > 500 and "404" not in text[:200].lower():
                 ai_page_found = {"url": u, "path": path}
@@ -1487,6 +1496,19 @@ def check_llm_discoverability(base_url, homepage_html):
     if ai_page_found:
         sb.add(20, f"AI Info Page found at {ai_page_found['path']} — brand controls its AI narrative", "ai_info_page")
         r, e = fetch(ai_page_found["url"])
+        # Guard against footer-discovered URLs that redirect (e.g. /ai-info → homepage).
+        if r and r.history:
+            final = r.url.split("?")[0].rstrip("/")
+            expected_suffix = ai_page_found["path"].rstrip("/")
+            if not final.endswith(expected_suffix):
+                # Page redirects away — treat as not found.
+                ai_info["found"] = False
+                ai_info["url"] = None
+                ai_info["redirects"] = True
+                sb.add(0, "No AI Info Page found — quick win: create /ai-info page describing your brand for AI agents", "ai_info_page")
+                raw_data["ai_info_page"] = ai_info
+                # Skip quality scoring for this page
+                r = None
         if r and r.status_code == 200:
             ai_soup = BeautifulSoup(r.text, "html.parser")
             ai_text = ai_soup.get_text(separator=" ", strip=True)
