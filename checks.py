@@ -1622,7 +1622,7 @@ def _bifrost_call(api_key: str, prompt: str, max_tokens: int = 700) -> str | Non
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={"model": "openai/gpt-4o-mini", "max_tokens": max_tokens,
                   "temperature": 0.3, "messages": [
-                      {"role": "system", "content": "You write in British English. Use British spelling and vocabulary throughout (e.g. optimise, analyse, catalogue, organisation, colour, prioritise)."},
+                      {"role": "system", "content": "You write in Australian English. Use Australian spelling and vocabulary throughout (e.g. optimise, analyse, catalogue, organisation, colour, prioritise)."},
                       {"role": "user", "content": prompt},
                   ]},
             timeout=30,
