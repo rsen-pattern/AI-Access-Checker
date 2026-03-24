@@ -629,7 +629,10 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
         if "indexable" in ai_info:
             llm_sec += _status(f"Indexable: {'Yes' if ai_info['indexable'] else 'No — has noindex'}", "success" if ai_info.get("indexable") else "danger")
     else:
-        llm_sec += _status("No AI Info Page found at /ai-info or similar", "warning")
+        if ai_info.get("redirects"):
+            llm_sec += _status("AI Info Page URL redirects elsewhere — page does not exist", "danger")
+        else:
+            llm_sec += _status("No AI Info Page found at /ai-info or similar", "warning")
     wellknown = llm_result.get("wellknown", {})
     if wellknown:
         llm_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 6px 0;">AI Policy Files (/.well-known/):</div>'
@@ -1883,7 +1886,10 @@ if run_audit or "_audit" in st.session_state:
             if "is_simple_html" in ai_info:
                 st.markdown(brand_status(f"Simple HTML: {'Yes' if ai_info['is_simple_html'] else 'Heavy JS — should be simple for AI'}", "success" if ai_info.get("is_simple_html") else "warning"), unsafe_allow_html=True)
         else:
-            st.markdown(brand_status("No AI Info Page found at /ai-info, /llm-info, or similar", "warning"), unsafe_allow_html=True)
+            if ai_info.get("redirects"):
+                st.markdown(brand_status("AI Info Page URL redirects elsewhere — page does not exist", "danger"), unsafe_allow_html=True)
+            else:
+                st.markdown(brand_status("No AI Info Page found at /ai-info, /llm-info, or similar", "warning"), unsafe_allow_html=True)
             st.info("💡 Create an **AI Info Page** at `/ai-info` — your brand's official fact sheet for AI. Include brand basics, key products, FAQs, and a 'Last Updated' date. Link it from your footer. Keep it simple HTML.")
 
         # ScoreBuilder rubric
