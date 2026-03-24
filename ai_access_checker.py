@@ -847,87 +847,108 @@ st.markdown(f'<div style="text-align:center;padding:1.5rem 0 0.3rem 0;">{PATTERN
 st.markdown(f'<div style="text-align:center;padding:0.3rem 0;"><span style="font-size:1.4rem;font-weight:700;color:{BRAND["white"]};">LLM Access Checker</span></div>', unsafe_allow_html=True)
 st.markdown(f'<div style="text-align:center;color:{BRAND["text_secondary"]};font-size:0.9rem;margin-bottom:1.5rem;">Full LLM Access Audit · JavaScript Rendering · LLM.txt · Robots.txt · Schema</div>', unsafe_allow_html=True)
 
+tab_audit, tab_history = st.tabs(["\U0001f50d  New Audit", "\U0001f4cb  Past Audits"])
+with tab_audit:
+    # ── INPUT: Mandatory URL structure ────────────────────────────────────────────
+    st.markdown(f'<div style="font-weight:600;color:{BRAND["white"]};margin-bottom:8px;">Enter the URLs to audit (minimum 7 pages required)</div>', unsafe_allow_html=True)
 
-# ── INPUT: Mandatory URL structure ────────────────────────────────────────────
-st.markdown(f'<div style="font-weight:600;color:{BRAND["white"]};margin-bottom:8px;">Enter the URLs to audit (minimum 7 pages required)</div>', unsafe_allow_html=True)
+    col_home, _ = st.columns([3, 1])
+    with col_home:
+        home_url = st.text_input("Homepage URL", placeholder="https://example.com", key="home")
 
-col_home, _ = st.columns([3, 1])
-with col_home:
-    home_url = st.text_input("Homepage URL", placeholder="https://example.com", key="home")
+    col_cat, col_blog, col_prod = st.columns(3)
+    with col_cat:
+        st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Category / Collection Pages (2 required)</div>', unsafe_allow_html=True)
+        cat_url_1 = st.text_input("Category Page 1", placeholder="https://example.com/collections/all", key="cat1", label_visibility="collapsed")
+        cat_url_2 = st.text_input("Category Page 2", placeholder="https://example.com/collections/shoes", key="cat2", label_visibility="collapsed")
 
-col_cat, col_blog, col_prod = st.columns(3)
-with col_cat:
-    st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Category / Collection Pages (2 required)</div>', unsafe_allow_html=True)
-    cat_url_1 = st.text_input("Category Page 1", placeholder="https://example.com/collections/all", key="cat1", label_visibility="collapsed")
-    cat_url_2 = st.text_input("Category Page 2", placeholder="https://example.com/collections/shoes", key="cat2", label_visibility="collapsed")
+    with col_blog:
+        st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Blog / Content Pages (2 required)</div>', unsafe_allow_html=True)
+        blog_url_1 = st.text_input("Blog Page 1", placeholder="https://example.com/blog/post-1", key="blog1", label_visibility="collapsed")
+        blog_url_2 = st.text_input("Blog Page 2", placeholder="https://example.com/blog/post-2", key="blog2", label_visibility="collapsed")
 
-with col_blog:
-    st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Blog / Content Pages (2 required)</div>', unsafe_allow_html=True)
-    blog_url_1 = st.text_input("Blog Page 1", placeholder="https://example.com/blog/post-1", key="blog1", label_visibility="collapsed")
-    blog_url_2 = st.text_input("Blog Page 2", placeholder="https://example.com/blog/post-2", key="blog2", label_visibility="collapsed")
+    with col_prod:
+        st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Product Pages (2 required)</div>', unsafe_allow_html=True)
+        prod_url_1 = st.text_input("Product Page 1", placeholder="https://example.com/products/item-1", key="prod1", label_visibility="collapsed")
+        prod_url_2 = st.text_input("Product Page 2", placeholder="https://example.com/products/item-2", key="prod2", label_visibility="collapsed")
 
-with col_prod:
-    st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Product Pages (2 required)</div>', unsafe_allow_html=True)
-    prod_url_1 = st.text_input("Product Page 1", placeholder="https://example.com/products/item-1", key="prod1", label_visibility="collapsed")
-    prod_url_2 = st.text_input("Product Page 2", placeholder="https://example.com/products/item-2", key="prod2", label_visibility="collapsed")
+    with st.expander("⚙️  Advanced Options"):
+        run_bot_crawl = st.checkbox("Run live bot crawl test (sends requests as each AI bot)", value=True)
 
-with st.expander("⚙️  Advanced Options"):
-    run_bot_crawl = st.checkbox("Run live bot crawl test (sends requests as each AI bot)", value=True)
+    run_audit = st.button("Run Audit", type="primary", use_container_width=True)
 
-run_audit = st.button("Run Audit", type="primary", use_container_width=True)
+    # Collect and validate URLs
+    all_url_inputs = {
+        "Homepage": home_url,
+        "Category 1": cat_url_1, "Category 2": cat_url_2,
+        "Blog 1": blog_url_1, "Blog 2": blog_url_2,
+        "Product 1": prod_url_1, "Product 2": prod_url_2,
+    }
 
-# ── AUDIT HISTORY SIDEBAR ─────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown(f'<div style="font-size:16px;font-weight:700;color:{BRAND["white"]};margin-bottom:4px;">Audit History</div>', unsafe_allow_html=True)
-
-    # Derive domain from homepage input for filtered history
-    _hist_domain = None
-    if home_url and home_url.strip():
-        try:
-            _hist_domain = urlparse(normalise_url(home_url.strip())).netloc
-        except Exception:
-            pass
-
-    _history = load_audit_history(_hist_domain, limit=15)
+with tab_history:
+    _hist_all = load_audit_history(limit=50)
+    st.markdown(f'<div style="font-size:22px;font-weight:800;color:{BRAND["white"]};margin-bottom:4px;">Past Audits</div><div style="height:2px;background:linear-gradient(90deg,{BRAND["purple"]},{BRAND["primary"]},transparent);margin-bottom:20px;"></div>', unsafe_allow_html=True)
 
     if get_supabase() is None:
-        st.markdown(f'<div style="color:{BRAND["text_secondary"]};font-size:12px;line-height:1.6;">Add <code>SUPABASE_URL</code> and <code>SUPABASE_KEY</code> to your Streamlit secrets to enable audit history storage.</div>', unsafe_allow_html=True)
-    elif not _history:
-        st.markdown(f'<div style="color:{BRAND["text_secondary"]};font-size:12px;">No audits saved yet. Run your first audit!</div>', unsafe_allow_html=True)
+        st.info("Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets to enable audit history.")
+    elif not _hist_all:
+        st.info("No audits saved yet — run your first audit from the New Audit tab.")
     else:
-        if _hist_domain:
-            st.markdown(f'<div style="color:{BRAND["text_secondary"]};font-size:11px;margin-bottom:8px;">Showing history for <strong style="color:{BRAND["primary"]};">{_hist_domain}</strong></div>', unsafe_allow_html=True)
-        for _row in _history:
+        _domains_list = sorted(set(r.get("domain", "") for r in _hist_all if r.get("domain")))
+        _filter_col, _count_col = st.columns([2, 4])
+        with _filter_col:
+            _filter_dom = st.selectbox("Filter by domain", ["All domains"] + _domains_list, key="hist_filter", label_visibility="collapsed")
+        _rows = _hist_all if _filter_dom == "All domains" else [r for r in _hist_all if r.get("domain") == _filter_dom]
+        with _count_col:
+            st.markdown(f'<div style="padding:8px 0;color:{BRAND["text_secondary"]};font-size:13px;">{len(_rows)} audit{"s" if len(_rows) != 1 else ""} · sorted newest first</div>', unsafe_allow_html=True)
+
+        _PILLARS = ["JS Rendering", "Robots & Crawl", "Schema & Entity", "AI Discoverability", "Semantic Hierarchy", "Security"]
+        _P_SHORT  = ["JS", "Robots", "Schema", "AI", "Semantic", "Security"]
+
+        def _hsc(s):
+            return BRAND["teal"] if s >= 75 else BRAND["warning"] if s >= 50 else BRAND["danger"]
+
+        def _badge(s):
+            c = _hsc(s)
+            return f'<span style="background:{c}22;color:{c};padding:2px 9px;border-radius:6px;font-size:12px;font-weight:700;">{s}</span>'
+
+        _TH = f'padding:10px 16px;text-align:left;color:{BRAND["text_secondary"]};font-size:11px;text-transform:uppercase;letter-spacing:1px;white-space:nowrap;border-bottom:1px solid {BRAND["border"]};'
+        _TD = f'padding:10px 16px;color:{BRAND["white"]};font-size:13px;vertical-align:middle;'
+
+        _pillar_headers = ''.join(f'<th style="{_TH}">{s}</th>' for s in _P_SHORT)
+        _thead = f'<tr style="background:{BRAND["bg_surface"]};">' \
+                 f'<th style="{_TH}">Domain</th><th style="{_TH}">Date</th>' \
+                 f'<th style="{_TH}">Score</th>{_pillar_headers}</tr>'
+
+        _tbody = ""
+        _grade_map = {90: "A", 75: "B", 60: "C", 40: "D", 0: "F"}
+        for i, _row in enumerate(_rows):
+            _dom   = _row.get("domain", "—")
+            _date  = (_row.get("audited_at") or "")[:10]
             _sc    = _row.get("overall_score", 0)
-            _sc_c  = BRAND["teal"] if _sc >= 75 else BRAND["warning"] if _sc >= 50 else BRAND["danger"]
-            _ts    = (_row.get("audited_at") or "")[:10]
-            _dom   = _row.get("domain", "")
-            _pills = ""
+            _bg    = BRAND["bg_card"] if i % 2 == 0 else BRAND["bg_surface"]
+            _g     = next(v for k, v in sorted(_grade_map.items(), reverse=True) if _sc >= k)
             try:
                 _ps = json.loads(_row.get("pillar_scores") or "{}")
-                for _pn, _pv in _ps.items():
-                    _pc = BRAND["teal"] if _pv >= 75 else BRAND["warning"] if _pv >= 50 else BRAND["danger"]
-                    _short = _pn.split()[0]  # "JS", "Robots", "Schema", etc.
-                    _pills += f'<span style="font-size:10px;color:{_pc};margin-right:6px;">{_short} {_pv}%</span>'
             except Exception:
-                pass
-            st.markdown(f"""
-<div style="background:{BRAND['bg_card']};border:1px solid {BRAND['border']};border-radius:10px;padding:10px 14px;margin-bottom:8px;">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
-    <div style="color:{BRAND['white']};font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;">{_dom}</div>
-    <div style="color:{_sc_c};font-size:18px;font-weight:800;line-height:1;">{_sc}%</div>
-  </div>
-  <div style="color:{BRAND['text_secondary']};font-size:10px;margin-bottom:4px;">{_ts}</div>
-  <div style="line-height:1.8;">{_pills}</div>
-</div>""", unsafe_allow_html=True)
+                _ps = {}
+            _pillar_cells = ''.join(f'<td style="{_TD}">{_badge(_ps.get(p, 0))}</td>' for p in _PILLARS)
+            _tbody += (
+                f'<tr style="background:{_bg};border-bottom:1px solid {BRAND["border"]};">'
+                f'<td style="{_TD}font-weight:600;">{_dom}</td>'
+                f'<td style="{_TD}color:{BRAND["text_secondary"]};">{_date}</td>'
+                f'<td style="{_TD}"><span style="color:{_hsc(_sc)};font-size:20px;font-weight:800;">{_sc}%</span>'
+                f'<span style="color:{BRAND["text_secondary"]};font-size:12px;margin-left:5px;">{_g}</span></td>'
+                f'{_pillar_cells}</tr>'
+            )
 
-# Collect and validate URLs
-all_url_inputs = {
-    "Homepage": home_url,
-    "Category 1": cat_url_1, "Category 2": cat_url_2,
-    "Blog 1": blog_url_1, "Blog 2": blog_url_2,
-    "Product 1": prod_url_1, "Product 2": prod_url_2,
-}
+        st.markdown(
+            f'<div style="border:1px solid {BRAND["border"]};border-radius:12px;overflow:auto;">'
+            f'<table style="width:100%;border-collapse:collapse;min-width:900px;">'
+            f'<thead>{_thead}</thead><tbody>{_tbody}</tbody></table></div>',
+            unsafe_allow_html=True
+        )
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
