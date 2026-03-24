@@ -930,11 +930,11 @@ st.markdown(f'<div style="text-align:center;padding:0.3rem 0;"><span style="font
 st.markdown(f'<div style="text-align:center;color:{BRAND["text_secondary"]};font-size:0.9rem;margin-bottom:1.5rem;">Full LLM Access Audit · JavaScript Rendering · LLM.txt · Robots.txt · Schema</div>', unsafe_allow_html=True)
 
 # ── SHARED LINK: load audit from ?audit=<id> query param ─────────────────────
-# Requires authentication — unauthenticated visitors see the Past Audits login
-# Reload if the requested audit ID differs from the currently loaded one
+# The UUID is unguessable so no additional auth is required to view a shared link.
+# Reload if the requested audit ID differs from the currently loaded one.
 _qp_audit_id = st.query_params.get("audit")
 _current_audit_id = st.session_state.get("_loaded_audit_id")
-if _qp_audit_id and _qp_audit_id != _current_audit_id and is_history_authenticated():
+if _qp_audit_id and _qp_audit_id != _current_audit_id:
     _qp_row = load_audit_by_id(_qp_audit_id)
     if _qp_row and _qp_row.get("full_results"):
         _fr = _qp_row["full_results"]
