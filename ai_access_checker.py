@@ -487,9 +487,13 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
             js_sec += f'<div style="font-weight:700;color:{B["white"]};font-size:14px;margin:12px 0 6px 0;">HTML vs JavaScript — What AI Crawlers Miss:</div>'
             js_sec += f'<table style="width:100%;border-collapse:collapse;font-size:13px;"><tr style="background:{B["bg_surface"]};"><th style="padding:7px 10px;text-align:left;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;letter-spacing:1px;">Content</th><th style="padding:7px 10px;text-align:center;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;">HTML (Crawler)</th><th style="padding:7px 10px;text-align:center;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;">JS (Browser)</th><th style="padding:7px 10px;text-align:left;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;">Impact</th></tr>'
             for c in comp["comparison"]:
-                bg = f"{B['danger']}15" if c["status"] == "missing" else "transparent"
-                sc = B["danger"] if c["status"] == "missing" else B["teal"]
-                impact = f'<span style="color:{sc};font-weight:600;">{"MISSING" if c["status"] == "missing" else "OK"}</span>'
+                if c["status"] == "missing":
+                    bg = f"{B['danger']}15"; sc = B["danger"]; label = "MISSING"
+                elif c["status"] == "warn":
+                    bg = f"{B['warning']}10"; sc = B["warning"]; label = "MINOR GAP"
+                else:
+                    bg = "transparent"; sc = B["teal"]; label = "OK"
+                impact = f'<span style="color:{sc};font-weight:600;">{label}</span>'
                 js_sec += f'<tr style="background:{bg};border-bottom:1px solid {B["border"]};"><td style="padding:5px 10px;color:{B["white"]};">{c["name"]}</td><td style="padding:5px 10px;text-align:center;color:{sc};">{c["html_val"]}</td><td style="padding:5px 10px;text-align:center;color:{B["teal"]};">{c["js_val"]}</td><td style="padding:5px 10px;">{impact}</td></tr>'
             js_sec += '</table>'
             html_t = comp["html_summary"]["text_content_length"]
@@ -764,7 +768,7 @@ def generate_report_text(domain, overall, pillar_scores, url_labels, js_results,
             lines.append(f"    {'Content':<25} {'HTML':>8} {'JS':>8} {'Status':>10}")
             lines.append(f"    {'-'*55}")
             for c in comp["comparison"]:
-                st_text = "MISSING" if c["status"] == "missing" else "OK"
+                st_text = "MISSING" if c["status"] == "missing" else "MINOR GAP" if c["status"] == "warn" else "OK"
                 lines.append(f"    {c['name']:<25} {str(c['html_val']):>8} {str(c['js_val']):>8} {st_text:>10}")
             html_text = comp["html_summary"]["text_content_length"]
             js_text = comp["js_summary"]["text_content_length"]
@@ -1410,6 +1414,11 @@ if run_audit or "_audit" in st.session_state:
                             row_bg = f"{BRAND['danger']}15"
                             impact_html = f'<span style="color:{BRAND["danger"]};font-size:12px;">{c["impact"]}</span>'
                             html_color = BRAND["danger"]
+                            js_color = BRAND["teal"]
+                        elif c["status"] == "warn":
+                            row_bg = f"{BRAND['warning']}10"
+                            impact_html = f'<span style="color:{BRAND["warning"]};font-size:12px;">Minor JS dependency (&lt;10% gap)</span>'
+                            html_color = BRAND["warning"]
                             js_color = BRAND["teal"]
                         else:
                             row_bg = "transparent"

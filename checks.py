@@ -368,12 +368,18 @@ def detect_cms(html, url=""):
 #   gap_severity ≥ 0.6:  -50  (hard cap activates at this level)
 #   gap_severity ≥ 0.3:  -30
 #   gap_severity ≥ 0.1:  -15
-#   Critical missing — Product Prices, Navigation Links: -10 each
+#   Critical missing — Product Prices, Navigation Links: -10 each (warn: -5 each)
 #   Text visibility <20%: -15
 #   No JS render API (framework-only fallback):
 #     High-risk framework: -30 | No title: -10 | No H1: -10
 #     Product elements but no prices: -15 | Very little text: -20
 #     No navigation: -10
+#
+# Delta thresholds (compare_html_vs_js):
+#   <5% JS vs HTML difference  → "ok"     (negligible, no impact shown)
+#   5–10% JS vs HTML difference → "warn"   (minor JS dependency)
+#   ≥10% JS vs HTML difference  → "missing" (significant JS dependency)
+#   gap_severity = Σ(1.0 × missing + 0.5 × warn) / total_numeric_metrics
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def fetch_js_rendered(url, get_secret):
@@ -557,8 +563,17 @@ def compare_html_vs_js(html_str, js_str, page_type="homepage"):
             status = "ok" if hv != "Missing" else "missing"
             delta = 0
         else:
-            status = "missing" if jv > hv else "ok"
             delta = jv - hv if jv > hv else 0
+            if jv > hv:
+                delta_ratio = delta / max(jv, 1)
+                if delta_ratio >= 0.10:
+                    status = "missing"      # ≥10% more content needs JS
+                elif delta_ratio >= 0.05:
+                    status = "warn"         # 5–10% minor JS dependency
+                else:
+                    status = "ok"           # <5% negligible difference
+            else:
+                status = "ok"
         comparison.append({
             "name": name, "html_val": hv, "js_val": jv,
             "status": status, "delta": delta,
@@ -566,8 +581,13 @@ def compare_html_vs_js(html_str, js_str, page_type="homepage"):
         })
 
     numeric = [c for c in comparison if not isinstance(c["html_val"], str)]
-    total_missing = sum(1 for c in comparison if c["status"] == "missing")
-    gap_severity = total_missing / max(len(numeric), 1)
+    # "missing" counts fully; "warn" counts as half — produces a fair gap_severity
+    total_missing = sum(1 for c in numeric if c["status"] == "missing")
+    gap_severity = (
+        sum(1.0 if c["status"] == "missing" else 0.5 if c["status"] == "warn" else 0.0
+            for c in numeric)
+        / max(len(numeric), 1)
+    )
 
     return {
         "comparison": comparison,
@@ -615,8 +635,11 @@ def check_js_rendering(url, get_secret):
             sb.add(0, "No significant JS gap detected — content accessible without JavaScript", "js_gap")
 
         for c in comparison["comparison"]:
+            # Only penalise critical fields when the gap is genuinely significant (≥10%)
             if c["status"] == "missing" and c["name"] in ("Product Prices", "Navigation Links"):
                 sb.deduct(10, f"{c['name']} not visible without JS — {c['impact']}", "critical_content")
+            elif c["status"] == "warn" and c["name"] in ("Product Prices", "Navigation Links"):
+                sb.deduct(5, f"{c['name']} partially hidden behind JS (minor gap) — {c['impact']}", "critical_content")
 
         html_t = comparison["html_summary"]["text_content_length"]
         js_t = comparison["js_summary"]["text_content_length"]
