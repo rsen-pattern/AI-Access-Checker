@@ -268,22 +268,15 @@ class ScoreBuilder:
 
 def compute_overall(pillar_scores: dict, robots_missing: bool = False) -> dict:
     """
-    Weighted overall score with hard cap gates.
+    Weighted overall score.
     pillar_scores: {"js": int, "robots": int, "schema": int, "llm": int}
+    If robots.txt is missing the robots pillar should already be 0 (set by caller),
+    which naturally drags the weighted score down by 25% — no artificial cap needed.
     Returns: {"score": int, "grade": dict, "hard_cap_applied": bool, "hard_cap_reason": str}
     """
     weights = {"js": 0.25, "robots": 0.25, "schema": 0.35, "llm": 0.15}
     raw = sum(pillar_scores.get(k, 0) * w for k, w in weights.items())
     overall = round(raw)
-
-    # Hard cap: robots.txt completely missing → overall max 40
-    if robots_missing and overall > 40:
-        return {
-            "score": 40,
-            "grade": get_grade(40),
-            "hard_cap_applied": True,
-            "hard_cap_reason": "robots.txt is missing — AI crawlers have no access instructions for your site",
-        }
 
     return {
         "score": overall,
@@ -1034,15 +1027,20 @@ def check_robots_crawlability(base_url, homepage_html):
     }
     raw_data["performance"] = perf
 
-    if dom_size < 1500:
-        sb.add(5, f"Lean DOM ({dom_size} elements) — AI agents can parse HTML efficiently", "performance")
+    # DOM size scoring: ratio-based (elements per KB of text content)
+    _body_text_len = max(len(soup.get_text(strip=True)), 1)
+    _dom_ratio = dom_size / (_body_text_len / 1024)  # elements per KB of text
+    if dom_size < 2000 or _dom_ratio < 50:
+        sb.add(5, f"Lean DOM ({dom_size} elements, {_dom_ratio:.0f} el/KB) — AI agents can parse HTML efficiently", "performance")
+    elif dom_size < 4000 or _dom_ratio < 100:
+        sb.add(2, f"Moderate DOM ({dom_size} elements, {_dom_ratio:.0f} el/KB) — acceptable for AI parsing", "performance")
     else:
-        sb.add(0, f"Large DOM ({dom_size} elements) — bloated HTML increases AI parsing cost", "performance")
+        sb.add(0, f"Heavy DOM ({dom_size} elements, {_dom_ratio:.0f} el/KB) — bloated HTML increases AI parsing cost", "performance")
 
     if len(head_blocking) < 5:
         sb.add(5, f"Few render-blocking scripts ({len(head_blocking)}) — content accessible quickly", "performance")
     else:
-        sb.deduct(0, f"{len(head_blocking)} render-blocking scripts in <head> — may delay content visibility for AI agents", "performance")
+        sb.deduct(5, f"{len(head_blocking)} render-blocking scripts in <head> — delays content visibility for AI agents", "performance")
 
     # Live bot crawl
     def _crawl_bot(url, name, ua, parser):
@@ -1323,6 +1321,7 @@ def check_schema_meta(url):
     offer_schemas = [s for s in schemas if "Offer" in s["type"]]
     has_gtin = any(any(f in s["data"] for f in ["gtin", "gtin13", "gtin8", "gtin14", "mpn"])
                    for s in product_schemas if s["data"])
+    has_sku = any("sku" in s["data"] for s in product_schemas if s["data"])
     has_return_policy = ("MerchantReturnPolicy" in type_set or
                          any("hasMerchantReturnPolicy" in s["data"]
                              for s in offer_schemas if s["data"]))
@@ -1335,8 +1334,10 @@ def check_schema_meta(url):
     if is_product_page:
         if has_gtin:
             sb.add(5, "GTIN/MPN present in Product schema — AI shopping agents can identify and cite this product", "ecommerce")
+        elif has_sku:
+            sb.deduct(4, "Product has SKU but no GTIN/MPN — AI agents can identify it, but global product databases prefer GTINs", "ecommerce")
         else:
-            sb.deduct(15, "Product page missing GTIN/MPN — AI shopping agents exclude or downrank products without identifiers (60% of catalogs affected)", "ecommerce")
+            sb.deduct(8, "Product page missing GTIN/MPN/SKU — AI shopping agents may exclude or downrank unidentifiable products", "ecommerce")
 
         if has_return_policy:
             sb.add(3, "MerchantReturnPolicy schema present — AI agents use this when building shopping recommendations", "ecommerce")
@@ -1377,7 +1378,7 @@ def check_schema_meta(url):
                    "has_date_published": date_schema, "has_date_modified": date_modified,
                    "has_org_schema": org_schema, "has_org_sameas": org_sameas,
                    "authoritative_citations": len(auth_citations), "legal_pages": found_legal},
-        "ecommerce": {"is_product_page": is_product_page, "has_gtin_or_mpn": has_gtin,
+        "ecommerce": {"is_product_page": is_product_page, "has_gtin_or_mpn": has_gtin, "has_sku": has_sku,
                       "has_return_policy_schema": has_return_policy, "has_shipping_schema": has_shipping,
                       "schema_price": schema_price, "price_in_html": price_in_html,
                       "review_schema_depth": has_review, "product_schema_count": len(product_schemas)},
@@ -1428,13 +1429,15 @@ def check_llm_discoverability(base_url, homepage_html):
             if len(text) > 10 and not text.startswith(("<!DOCTYPE", "<html")):
                 found = True
                 content = text[:5000]
+                _word_count = len(text.split())
                 quality = {
-                    "has_title":       bool(re.search(r'^#\s+', text, re.M)),
-                    "has_description": len(text) > 100,
-                    "has_links":       bool(re.search(r'https?://', text)),
-                    "has_sections":    text.count("\n\n") > 2,
+                    "has_title":       bool(re.search(r'^#\s+\S', text, re.M)),
+                    "has_description": len(text) > 200 and _word_count >= 20,
+                    "has_links":       bool(re.search(r'https?://\S+', text)),
+                    "has_sections":    text.count("\n\n") > 2 and _word_count >= 30,
                     "chars":           len(text),
                     "lines":           len(text.splitlines()),
+                    "words":           _word_count,
                 }
                 if llm_found is None:
                     llm_found = {"path": path, "url": u, "quality": quality, "content": content}
@@ -1527,8 +1530,9 @@ def check_llm_discoverability(base_url, homepage_html):
 
     raw_data["ai_info_page"] = ai_info
 
-    # ── 3. Well-Known Files — INFORMATIONAL ONLY, zero score weight ──────────
-    # These are displayed in the UI under "Future Readiness" but do not affect score.
+    # ── 3. Well-Known Files — small bonus for emerging standards ────────────
+    # Each found+valid file earns +2 pts (max +8 from 4 files) to fill the
+    # pillar ceiling to 100.  Deprecated files earn 0.
     wellknown_checks = {
         "/.well-known/ucp": {
             "description": "Universal Commerce Protocol — allows AI shopping agents to discover checkout capabilities",
@@ -1561,11 +1565,16 @@ def check_llm_discoverability(base_url, homepage_html):
                 found = True
                 try: json.loads(text); valid = True
                 except: valid = False
+        # Emerging/niche standards earn +2 if found+valid; deprecated earn 0
+        pts = 0
+        if found and meta["status"] in ("emerging", "niche"):
+            pts = 2
+            sb.add(2, f"{path} found — early adopter of {meta['description'].split('—')[0].strip()}", "wellknown")
         raw_data["wellknown"][path] = {
             "found": found, "url": u, "valid_json": valid,
             "description": meta["description"], "status": meta["status"],
             "note": meta["note"],
-            "score_contribution": 0,  # explicit zero — these never affect score
+            "score_contribution": pts,
         }
 
     result = sb.to_dict()
