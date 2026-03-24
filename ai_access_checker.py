@@ -930,7 +930,10 @@ st.markdown(f'<div style="text-align:center;padding:0.3rem 0;"><span style="font
 st.markdown(f'<div style="text-align:center;color:{BRAND["text_secondary"]};font-size:0.9rem;margin-bottom:1.5rem;">Full LLM Access Audit · JavaScript Rendering · LLM.txt · Robots.txt · Schema</div>', unsafe_allow_html=True)
 
 # ── SHARED LINK: load audit from ?audit=<id> query param ─────────────────────
-# The UUID is unguessable so no additional auth is required to view a shared link.
+# Auth is intentionally NOT required here. Audit IDs are UUID v4 (122 bits of
+# entropy) and shareable links are a supported workflow — anyone with the link
+# can view the report without signing in. If private-by-default is ever needed,
+# re-add `and is_history_authenticated()` to the condition below.
 # Reload if the requested audit ID differs from the currently loaded one.
 _qp_audit_id = st.query_params.get("audit")
 _current_audit_id = st.session_state.get("_loaded_audit_id")
