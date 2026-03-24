@@ -258,6 +258,18 @@ def load_audit_by_id(audit_id):
     return None
 
 
+def delete_audit_by_id(audit_id):
+    """Delete a single audit row by primary key. Returns True on success."""
+    sb = get_supabase()
+    if not sb or not audit_id:
+        return False
+    try:
+        sb.table("audits").delete().eq("id", str(audit_id)).execute()
+        return True
+    except Exception:
+        return False
+
+
 def normalise_url(url: str) -> str:
     url = url.strip()
     if not url.startswith(("http://", "https://")):
@@ -1020,7 +1032,7 @@ with tab_history:
             _label = f"{_dom} · {_date} · {_sc}%"
             _has_full = _fr is not None and isinstance(_fr, dict) and "js_results" in _fr
             _audit_id = _row.get("id")
-            _btn_col, _share_col, _info_col = st.columns([3, 1, 4])
+            _btn_col, _share_col, _del_col, _info_col = st.columns([3, 1, 1, 4])
             with _btn_col:
                 if st.button(f"📋 {_label}", key=f"load_{_audit_id or _label}", disabled=not _has_full, use_container_width=True):
                     st.session_state["_audit"] = _fr
@@ -1035,8 +1047,22 @@ with tab_history:
                         st.session_state[f"_shared_{_audit_id}"] = True
                     if st.session_state.get(f"_shared_{_audit_id}"):
                         st.markdown(f'<div style="font-size:10px;color:{BRAND["teal"]};">URL updated ✓</div>', unsafe_allow_html=True)
+            with _del_col:
+                if _audit_id:
+                    _confirm_key = f"_del_confirm_{_audit_id}"
+                    if st.session_state.get(_confirm_key):
+                        if st.button("✓ Yes", key=f"del_yes_{_audit_id}", help="Confirm delete"):
+                            if delete_audit_by_id(_audit_id):
+                                st.session_state.pop(_confirm_key, None)
+                                st.rerun()
+                    else:
+                        if st.button("🗑", key=f"del_{_audit_id}", help="Delete this audit"):
+                            st.session_state[_confirm_key] = True
+                            st.rerun()
             with _info_col:
-                if not _has_full:
+                if st.session_state.get(f"_del_confirm_{_audit_id}"):
+                    st.markdown(f'<div style="padding:6px 0;color:{BRAND["danger"]};font-size:11px;">Delete {_dom} ({_date})? Click ✓ Yes to confirm.</div>', unsafe_allow_html=True)
+                elif not _has_full:
                     st.markdown(f'<div style="padding:6px 0;color:{BRAND["text_secondary"]};font-size:11px;">⚠ Saved before full-result storage was enabled</div>', unsafe_allow_html=True)
                 else:
                     _url_count = len(_fr.get("all_test_urls") or [])
