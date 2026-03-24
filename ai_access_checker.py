@@ -182,6 +182,25 @@ def get_supabase():
     return None
 
 
+def auth_sign_in(email, password):
+    """Sign in with Supabase email/password. Returns (user_email, error_str)."""
+    try:
+        from supabase import create_client
+        url = get_secret("SUPABASE_URL", "")
+        key = get_secret("SUPABASE_KEY", "")
+        if not url or not key:
+            return None, "Supabase not configured"
+        sb = create_client(url, key)
+        res = sb.auth.sign_in_with_password({"email": email, "password": password})
+        return res.user.email, None
+    except Exception as e:
+        return None, str(e)
+
+
+def is_history_authenticated():
+    return st.session_state.get("_history_user") is not None
+
+
 def _sanitise_for_db(obj, _depth=0):
     """Recursively sanitise audit data for DB storage.
     Truncates long strings to prevent Supabase row-size issues.
@@ -959,8 +978,37 @@ with tab_audit:
     }
 
 with tab_history:
-    _hist_all = load_audit_history(limit=50)
     st.markdown(f'<div style="font-size:22px;font-weight:800;color:{BRAND["white"]};margin-bottom:4px;">Past Audits</div><div style="height:2px;background:linear-gradient(90deg,{BRAND["purple"]},{BRAND["primary"]},transparent);margin-bottom:20px;"></div>', unsafe_allow_html=True)
+
+    # ── Auth gate ────────────────────────────────────────────────────────────
+    if not is_history_authenticated():
+        st.markdown(f'<div style="color:{BRAND["text_secondary"]};font-size:14px;margin-bottom:16px;">Sign in to view and manage past audits.</div>', unsafe_allow_html=True)
+        _login_col, _ = st.columns([1, 1])
+        with _login_col:
+            _email = st.text_input("Email", key="hist_email")
+            _password = st.text_input("Password", type="password", key="hist_password")
+            if st.button("Sign in", type="primary", use_container_width=True, key="hist_login"):
+                if _email and _password:
+                    _user, _err = auth_sign_in(_email, _password)
+                    if _user:
+                        st.session_state["_history_user"] = _user
+                        st.rerun()
+                    else:
+                        st.error(f"Login failed: {_err}")
+                else:
+                    st.warning("Enter your email and password.")
+        st.stop()
+
+    # Logged-in header
+    _auth_col, _logout_col = st.columns([5, 1])
+    with _auth_col:
+        st.markdown(f'<div style="color:{BRAND["text_secondary"]};font-size:12px;margin-bottom:12px;">Signed in as <strong style="color:{BRAND["teal"]};">{st.session_state["_history_user"]}</strong></div>', unsafe_allow_html=True)
+    with _logout_col:
+        if st.button("Sign out", key="hist_logout"):
+            st.session_state.pop("_history_user", None)
+            st.rerun()
+
+    _hist_all = load_audit_history(limit=50)
 
     if get_supabase() is None:
         st.info("Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets to enable audit history.")
