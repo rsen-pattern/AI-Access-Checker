@@ -707,55 +707,45 @@ def check_security_exposure(base_url, robots_raw: str = "", homepage_html: str =
     findings = {"critical": [], "backend": [], "customer": [], "dev": [],
                 "html_exposure": [], "robots_allowlist": []}
 
-    # ── 1. AI bots accessing critical paths ──────────────────────────────────
-    critical_exposed_count = 0
+    # ── 1–3. Sensitive path probing (parallelized) ──────────────────────────
+    _path_tasks = []
     for path in SENSITIVE_PATHS["critical"]:
-        resp, err = fetch(base_url + path, timeout=8,
-                          user_agent=AI_BOTS["OpenAI"]["ChatGPT-User"])
-        if resp and resp.status_code not in (403, 404, 401, 410):
-            findings["critical"].append({
-                "path": path, "status": resp.status_code,
-                "risk": "Critical — this path may expose admin or environment data to AI bots",
-                "size": len(resp.text),
-            })
-            if critical_exposed_count < 2:  # cap deduction at -50
-                sb.deduct(25, f"Critical path accessible to AI bots: {path} (HTTP {resp.status_code})", "critical_exposure")
-                critical_exposed_count += 1
-
-    # ── 2. AI bots accessing backend/API paths ────────────────────────────────
-    backend_exposed_count = 0
+        _path_tasks.append(("critical", path, AI_BOTS["OpenAI"]["ChatGPT-User"]))
     for path in SENSITIVE_PATHS["backend"]:
-        resp, err = fetch(base_url + path, timeout=8,
-                          user_agent=AI_BOTS["OpenAI"]["ChatGPT-User"])
-        if resp and resp.status_code not in (403, 404, 401, 410):
-            findings["backend"].append({
-                "path": path, "status": resp.status_code,
-                "risk": "High — API/backend endpoint accessible to AI bots may expose product data or internal structure",
-                "size": len(resp.text),
-            })
-            if backend_exposed_count < 2:  # cap deduction at -30
-                sb.deduct(15, f"Backend path accessible to AI bots: {path} (HTTP {resp.status_code})", "backend_exposure")
-                backend_exposed_count += 1
-
-    # ── 3. AI bots accessing customer/private paths ───────────────────────────
-    customer_exposed_count = 0
+        _path_tasks.append(("backend", path, AI_BOTS["OpenAI"]["ChatGPT-User"]))
     for path in SENSITIVE_PATHS["customer"]:
-        resp, err = fetch(base_url + path, timeout=8,
-                          user_agent=AI_BOTS["Anthropic"]["Claude-User"])
+        _path_tasks.append(("customer", path, AI_BOTS["Anthropic"]["Claude-User"]))
+
+    def _probe_path(category, path, ua):
+        resp, err = fetch(base_url + path, timeout=8, user_agent=ua)
+        return category, path, resp
+
+    _path_results = []
+    with ThreadPoolExecutor(max_workers=6) as _pool:
+        for cat, path, resp in _pool.map(lambda t: _probe_path(*t), _path_tasks):
+            _path_results.append((cat, path, resp))
+
+    _exposed_counts = {"critical": 0, "backend": 0, "customer": 0}
+    _deductions = {"critical": 25, "backend": 15, "customer": 10}
+    _caps = {"critical": 2, "backend": 2, "customer": 2}
+    _risks = {
+        "critical": "Critical — this path may expose admin or environment data to AI bots",
+        "backend": "High — API/backend endpoint accessible to AI bots may expose product data or internal structure",
+        "customer": "Medium — customer area accessible to AI bots",
+    }
+
+    for cat, path, resp in _path_results:
         if resp and resp.status_code not in (403, 404, 401, 410):
-            # For customer paths, check if actual sensitive content is rendered
-            soup = BeautifulSoup(resp.text, "html.parser")
-            page_text = soup.get_text().lower()
-            contains_sensitive = any(kw in page_text for kw in
-                ["order", "address", "credit card", "password", "account details", "billing"])
-            findings["customer"].append({
-                "path": path, "status": resp.status_code,
-                "contains_sensitive_content": contains_sensitive,
-                "risk": "Medium — customer area accessible to AI bots",
-            })
-            if customer_exposed_count < 2:  # cap deduction at -20
-                sb.deduct(10, f"Customer path accessible to AI bots: {path} (HTTP {resp.status_code})", "customer_exposure")
-                customer_exposed_count += 1
+            finding = {"path": path, "status": resp.status_code, "risk": _risks[cat], "size": len(resp.text)}
+            if cat == "customer":
+                soup_c = BeautifulSoup(resp.text, "html.parser")
+                finding["contains_sensitive_content"] = any(
+                    kw in soup_c.get_text().lower()
+                    for kw in ["order", "address", "credit card", "password", "account details", "billing"])
+            findings[cat].append(finding)
+            if _exposed_counts[cat] < _caps[cat]:
+                sb.deduct(_deductions[cat], f"{cat.title()} path accessible to AI bots: {path} (HTTP {resp.status_code})", f"{cat}_exposure")
+                _exposed_counts[cat] += 1
 
     # ── 4. robots.txt explicitly allows sensitive paths to AI bots ───────────
     if robots_raw:

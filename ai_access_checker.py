@@ -1197,15 +1197,20 @@ if run_audit or "_audit" in st.session_state:
         audit_start = time.time()
         progress = st.progress(0, text=f"Starting audit — estimated {time_label}…")
 
-        # ── PILLAR 1: JS RENDERING (all pages) ────────────────────────────────
+        # ── PILLAR 1: JS RENDERING (all pages — parallelized) ────────────────
         progress.progress(3, text=f"[1/6] JS Rendering — checking {n_pages} pages… (est. {js_label.split('(')[0].strip()})")
         js_results = {}
-        for i, test_url in enumerate(all_test_urls):
-            elapsed = round(time.time() - audit_start)
-            label = url_labels.get(test_url, test_url)
-            progress.progress(3 + round(14 * (i / n_pages)),
-                text=f"[1/6] JS Rendering — {label} ({i+1}/{n_pages}) · {elapsed}s elapsed")
-            js_results[test_url] = check_js_rendering(test_url, get_secret)
+        with ThreadPoolExecutor(max_workers=3) as _pool:
+            _futs = {_pool.submit(check_js_rendering, u, get_secret): u for u in all_test_urls}
+            for _done_count, _f in enumerate(as_completed(_futs), 1):
+                _u = _futs[_f]
+                try:
+                    js_results[_u] = _f.result(timeout=60)
+                except Exception:
+                    js_results[_u] = {"score": 0, "error": "timeout/crash"}
+                elapsed = round(time.time() - audit_start)
+                progress.progress(3 + round(14 * (_done_count / n_pages)),
+                    text=f"[1/6] JS Rendering — {_done_count}/{n_pages} done · {elapsed}s elapsed")
         js_score = round(sum(r.get("score", 0) for r in js_results.values()) / len(js_results))
 
         # ── PILLAR 2: ROBOTS & CRAWLABILITY (site-level) ──────────────────────
@@ -1217,14 +1222,19 @@ if run_audit or "_audit" in st.session_state:
         robots_result = check_robots_crawlability(base_url, homepage_html)
         robots_score = robots_result.get("score", 0)
 
-        # ── PILLAR 3: SCHEMA & ENTITY (all pages) ─────────────────────────────
+        # ── PILLAR 3: SCHEMA & ENTITY (all pages — parallelized) ─────────────
         schema_results = {}
-        for i, test_url in enumerate(all_test_urls):
-            elapsed = round(time.time() - audit_start)
-            label = url_labels.get(test_url, test_url)
-            progress.progress(38 + round(14 * (i / n_pages)),
-                text=f"[3/6] Schema & Entity — {label} ({i+1}/{n_pages}) · {elapsed}s elapsed")
-            schema_results[test_url] = check_schema_meta(test_url)
+        with ThreadPoolExecutor(max_workers=3) as _pool:
+            _futs = {_pool.submit(check_schema_meta, u): u for u in all_test_urls}
+            for _done_count, _f in enumerate(as_completed(_futs), 1):
+                _u = _futs[_f]
+                try:
+                    schema_results[_u] = _f.result(timeout=60)
+                except Exception:
+                    schema_results[_u] = {"score": 0, "error": "timeout/crash"}
+                elapsed = round(time.time() - audit_start)
+                progress.progress(38 + round(14 * (_done_count / n_pages)),
+                    text=f"[3/6] Schema & Entity — {_done_count}/{n_pages} done · {elapsed}s elapsed")
         schema_score = round(sum(r.get("score", 0) for r in schema_results.values()) / len(schema_results))
 
         # ── PILLAR 4: AI DISCOVERABILITY (site-level) ──────────────────────────
@@ -1237,8 +1247,14 @@ if run_audit or "_audit" in st.session_state:
         elapsed = round(time.time() - audit_start)
         progress.progress(62, text=f"[5/7] Semantic Hierarchy — checking heading structure… · {elapsed}s elapsed")
         semantic_results = {}
-        for test_url in all_test_urls:
-            semantic_results[test_url] = check_semantic_hierarchy(test_url)
+        with ThreadPoolExecutor(max_workers=3) as _pool:
+            _futs = {_pool.submit(check_semantic_hierarchy, u): u for u in all_test_urls}
+            for _f in as_completed(_futs):
+                _u = _futs[_f]
+                try:
+                    semantic_results[_u] = _f.result(timeout=60)
+                except Exception:
+                    semantic_results[_u] = {"score": 0, "error": "timeout/crash"}
 
         # ── SECURITY CHECK (separate score) ───────────────────────────────────
         elapsed = round(time.time() - audit_start)
