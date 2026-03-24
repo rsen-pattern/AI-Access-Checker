@@ -235,9 +235,12 @@ def save_audit_to_db(domain, overall, pillar_scores_dict, audited_urls, full_res
         }
         if full_results is not None:
             row["full_results"] = _sanitise_for_db(full_results)
-        sb.table("audits").insert(row).execute()
+        result = sb.table("audits").insert(row).execute()
+        if result.data:
+            return result.data[0].get("id")
     except Exception:
         pass  # Never crash the app due to a DB write failure
+    return None
 
 
 def load_audit_history(domain=None, limit=10):
@@ -1112,6 +1115,7 @@ with tab_history:
                         st.session_state["_loaded_from_history"] = _label
                         if _audit_id:
                             st.query_params["audit"] = str(_audit_id)
+                            st.session_state["_loaded_audit_id"] = str(_audit_id)
                         st.rerun()
                 with _share_col:
                     if _audit_id and _has_full:
@@ -1213,6 +1217,9 @@ with tab_history:
 if run_audit or "_audit" in st.session_state:
     if run_audit:
         st.session_state.pop("_audit", None)
+        st.session_state.pop("_loaded_audit_id", None)
+        st.session_state.pop("_loaded_from_history", None)
+        st.query_params.pop("audit", None)
         # Validate all 7 URLs are provided
         missing = [name for name, u in all_url_inputs.items() if not u or not u.strip()]
         if missing:
@@ -1433,7 +1440,7 @@ if run_audit or "_audit" in st.session_state:
 
     # ── Save new audit to Supabase (fresh runs only) ──────────────────────
     if run_audit:
-        save_audit_to_db(
+        _saved_id = save_audit_to_db(
             domain=parsed.netloc,
             overall=overall,
             pillar_scores_dict={
@@ -1466,6 +1473,9 @@ if run_audit or "_audit" in st.session_state:
                 "overall_result":    overall_result,
             },
         )
+        if _saved_id:
+            st.query_params["audit"] = str(_saved_id)
+            st.session_state["_loaded_audit_id"] = str(_saved_id)
 
     with tab_audit:
         # ══════════════════════════════════════════════════════════════════════
