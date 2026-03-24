@@ -80,8 +80,8 @@ PILLAR_INFO = {
         "why": "robots.txt now controls AI access, not just search access. Blocking AI crawlers = choosing invisibility in AI answers. Cloudflare's Bot Fight Mode blocks ChatGPT-User (which surged 2,825% YoY) and PerplexityBot without any robots.txt instruction. A misconfigured Cloudflare setup can make your site invisible to AI agents regardless of all other optimisations.",
     },
     "schema": {
-        "what": "We parse all JSON-LD and Microdata per page. We validate field completeness including ecommerce-critical fields: GTIN/MPN (product identifiers required by AI shopping agents), MerchantReturnPolicy, shippingDetails, AggregateRating depth, and Organization sameAs. We also check for price/schema consistency and outbound citations to authoritative domains.",
-        "why": "Schema is the machine-readable 'entity card' that feeds both Google's Knowledge Graph and LLM entity understanding. Products without GTINs are excluded or deprioritised by AI shopping agents — research shows 60% of ecommerce catalogs have missing GTINs. Organization sameAs connects your site to your LinkedIn, Wikipedia, and social profiles, creating the consistent entity presence AI systems use to verify and trust your brand.",
+        "what": "We parse all JSON-LD and Microdata per page. We validate field completeness including ecommerce-critical fields: GTIN/MPN (product identifiers required by AI shopping agents), MerchantReturnPolicy, shippingDetails, AggregateRating depth, and Organisation sameAs. We also check for price/schema consistency and outbound citations to authoritative domains.",
+        "why": "Schema is the machine-readable 'entity card' that feeds both Google's Knowledge Graph and LLM entity understanding. Products without GTINs are excluded or deprioritised by AI shopping agents — research shows 60% of ecommerce catalogues have missing GTINs. Organisation sameAs connects your site to your LinkedIn, Wikipedia, and social profiles, creating the consistent entity presence AI systems use to verify and trust your brand.",
     },
     "semantic_content": {
         "what": "We check page structure signals that AI models rely on: heading hierarchy (H1→H2→H3 in logical order), semantic HTML elements (article, section, nav), accessibility attributes (alt text, lang, ARIA landmarks), whether pages open with a clear summary paragraph, and content quality (specific facts and figures vs vague marketing language). Each page in your audit is checked individually.",
@@ -568,9 +568,10 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
             rob_sec += _status("CSS/JS not blocked — AI agents can render pages", "success")
         exposed = [(p, r) for p, r in robots_result.get("sensitive_paths", {}).items() if not r.get("blocked", not r.get("accessible_per_robots", False))]
         if exposed:
-            rob_sec += f'<div style="font-weight:600;color:{B["danger"]};margin:12px 0 6px 0;">Sensitive Paths Exposed ({len(exposed)}):</div>'
+            rob_sec += f'<div style="font-weight:600;color:{B["warning"]};margin:12px 0 6px 0;">No Disallow rule — {len(exposed)} path(s) not covered in robots.txt:</div>'
+            rob_sec += f'<div style="font-size:11px;color:{B["text_secondary"]};margin-bottom:6px;">(These paths may still be inaccessible via HTTP — see the Security section for actual exposure)</div>'
             for path, _ in exposed:
-                rob_sec += _status(path, "warning")
+                rob_sec += _status(path, "info")
     else:
         rob_sec += _status("No robots.txt found", "danger")
 
@@ -1539,7 +1540,7 @@ if run_audit or "_audit" in st.session_state:
                 st.metric("Bot Access", f"{allowed_bots}/{total_bots}")
             with sub_cols[2]:
                 exposed_count = sum(1 for p, r in robots_result.get("sensitive_paths", {}).items() if not r.get("blocked", not r.get("accessible_per_robots", False)))
-                st.metric("Paths Exposed", exposed_count)
+                st.metric("Paths No Disallow", exposed_count)
             with sub_cols[3]:
                 st.metric("Overall Grade", f"{grade_letter} ({grade_label})")
 
@@ -2003,6 +2004,57 @@ if run_audit or "_audit" in st.session_state:
                 st.caption(f"— {path} not found")
 
         # ══════════════════════════════════════════════════════════════════════
+        # SECURITY DRILLDOWN
+        # ══════════════════════════════════════════════════════════════════════
+        st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
+        st.markdown("### Security")
+        st.markdown(f'{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">Sensitive path probing — checked once against your live site</span>', unsafe_allow_html=True)
+        sec_findings = security_result.get("findings", {})
+        sec_total_exposed = security_result.get("total_exposed", 0)
+
+        if sec_total_exposed == 0 and not sec_findings.get("html_exposure") and not sec_findings.get("robots_allowlist"):
+            st.markdown(brand_status("No sensitive paths accessible to AI bots — all probed paths returned 403/404/401", "success"), unsafe_allow_html=True)
+        else:
+            for cat, label_str, color_key in [
+                ("critical", "Critical paths (admin/env/config)", "danger"),
+                ("backend", "Backend paths (API/GraphQL)", "warning"),
+                ("customer", "Customer paths (account/checkout)", "warning"),
+            ]:
+                items = sec_findings.get(cat, [])
+                if items:
+                    st.markdown(f'<div style="font-weight:600;color:{BRAND[color_key]};margin:10px 0 4px 0;">{label_str} — accessible to AI bots:</div>', unsafe_allow_html=True)
+                    for f in items:
+                        st.markdown(brand_status(f'{f["path"]} — HTTP {f["status"]} ({f["size"]:,} bytes)', color_key), unsafe_allow_html=True)
+            if sec_findings.get("html_exposure"):
+                st.markdown(f'<div style="font-weight:600;color:{BRAND["warning"]};margin:10px 0 4px 0;">Sensitive content in HTML source:</div>', unsafe_allow_html=True)
+                for item in sec_findings["html_exposure"]:
+                    st.markdown(brand_status(item, "warning"), unsafe_allow_html=True)
+            if sec_findings.get("robots_allowlist"):
+                st.markdown(f'<div style="font-weight:600;color:{BRAND["warning"]};margin:10px 0 4px 0;">robots.txt explicitly allows sensitive paths for AI bots:</div>', unsafe_allow_html=True)
+                for item in sec_findings["robots_allowlist"]:
+                    st.markdown(brand_status(f'{item["bot"]}: {item["path"]}', "warning"), unsafe_allow_html=True)
+
+        # Robots.txt coverage note (separate from HTTP accessibility)
+        sensitive = robots_result.get("sensitive_paths", {}) if isinstance(robots_result, dict) else {}
+        no_disallow = [p for p, r in sensitive.items() if not r.get("blocked", not r.get("accessible_per_robots", False))]
+        if no_disallow:
+            with st.expander(f"Robots.txt coverage — {len(no_disallow)} paths have no Disallow rule"):
+                st.caption("These paths are not necessarily accessible — this is about robots.txt hygiene, not HTTP exposure.")
+                for p in no_disallow:
+                    st.markdown(brand_status(f"No Disallow rule: {p}", "info"), unsafe_allow_html=True)
+
+        # Score breakdown
+        sec_items = security_result.get("items", [])
+        if sec_items:
+            with st.expander("Score breakdown"):
+                for item in sec_items:
+                    pts = item.get("points", 0)
+                    lbl = item.get("label", "")
+                    s = "success" if pts >= 0 else "danger"
+                    prefix = f"+{pts}" if pts >= 0 else str(pts)
+                    st.markdown(brand_status(f"{prefix} pts — {lbl}", s), unsafe_allow_html=True)
+
+        # ══════════════════════════════════════════════════════════════════════
         # RECOMMENDATIONS
         # ══════════════════════════════════════════════════════════════════════
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
@@ -2049,7 +2101,7 @@ if run_audit or "_audit" in st.session_state:
                                     if not r.get("blocked", not r.get("accessible_per_robots", r.get("exposed", False)))
                                     and any(x in p for x in ["/admin", "/api", "/.env", "/config", "/database"])]
                 if critical_exposed:
-                    recs.append(("danger", "Security", f"Critical paths exposed: {', '.join(critical_exposed[:4])}. Add Disallow rules immediately."))
+                    recs.append(("warning", "Robots.txt", f"Sensitive paths have no Disallow rule in robots.txt: {', '.join(critical_exposed[:4])}. These paths aren't necessarily accessible — but adding explicit Disallow rules is best practice to prevent accidental AI bot indexing."))
 
         # ── Schema ────────────────────────────────────────────────────────────────
         if schema_score < 30:
@@ -2067,7 +2119,7 @@ if run_audit or "_audit" in st.session_state:
         for sr in schema_results.values():
             ecomm = sr.get("ecommerce", {})
             if ecomm.get("is_product_page") and not ecomm.get("has_gtin_or_mpn"):
-                recs.append(("warning", "Product Schema", "Product pages lack GTIN/MPN identifiers. Research shows 60% of catalogs missing GTINs are downgraded or excluded by AI shopping agents. Add gtin13 or mpn to all Product schema."))
+                recs.append(("warning", "Product Schema", "Product pages lack GTIN/MPN identifiers. Research shows 60% of catalogues missing GTINs are downgraded or excluded by AI shopping agents. Add gtin13 or mpn to all Product schema."))
                 break
         for sr in schema_results.values():
             ecomm = sr.get("ecommerce", {})

@@ -1270,13 +1270,20 @@ def check_schema_meta(url):
     has_review = any(d.get("@type") in ("Review", "AggregateRating") for d in jsonld)
     has_sameas_anywhere = any("sameAs" in d for d in jsonld)
 
+    # Author and publication date are only relevant for editorial/blog content.
+    # Penalising product pages or category pages for missing these is misleading.
+    is_article_page = any(d.get("@type") in ("Article", "BlogPosting", "NewsArticle", "TechArticle", "WebPage") for d in jsonld)
+    is_ecommerce_page = any("Product" in str(d.get("@type", "")) for d in jsonld)
+
     if author_schema or author_el:
         sb.add(5, "Author attribution present — E-E-A-T signal for AI trust scoring", "entity")
-    else:
-        sb.add(0, "No author attribution — AI may not trust or cite anonymous content", "entity")
+    elif is_article_page and not is_ecommerce_page:
+        sb.add(0, "No author attribution — AI may not trust or cite anonymous editorial content", "entity")
 
     if date_schema:
         sb.add(3, "Publication date in schema — AI can assess content freshness", "entity")
+    elif is_article_page and not is_ecommerce_page:
+        sb.add(0, "No publication date in schema — AI cannot assess freshness of this content", "entity")
     if date_modified:
         sb.add(2, "Date modified in schema — AI knows content is actively maintained", "entity")
 
