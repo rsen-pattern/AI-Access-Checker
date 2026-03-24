@@ -416,7 +416,7 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
                 js_sec += _status(rf, "warning")
 
     # ── Pillar 2: Robots & Crawlability ─────────────────────────────────
-    rob_sec = _pillar_header(2, "Robots.txt &amp; Crawler Access", pillar_scores.get("Robots.txt", 0))
+    rob_sec = _pillar_header(2, "Robots.txt &amp; Crawler Access", pillar_scores.get("Robots & Crawl", 0))
     rob_sec += _pill("SITE-LEVEL", B["purple"])
     rob_sec += f'<span style="color:{B["text_secondary"]};font-size:12px;"> Checked once — controls all crawler access</span><br><br>'
     if robots_result.get("found"):
@@ -443,7 +443,7 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
         rob_sec += _status("No robots.txt found", "danger")
 
     # ── Pillar 3: Schema & Entity ────────────────────────────────────────
-    schema_sec = _pillar_header(3, "Schema &amp; Entity", pillar_scores.get("Schema", 0))
+    schema_sec = _pillar_header(3, "Schema &amp; Entity", pillar_scores.get("Schema & Entity", 0))
     schema_sec += _pill("PAGE-LEVEL", B["primary"])
     schema_sec += f'<span style="color:{B["text_secondary"]};font-size:12px;"> Checked on each of your {len(schema_results)} pages</span>'
     for test_url, sr in schema_results.items():
@@ -482,7 +482,7 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
             schema_sec += _status("No Schema.org structured data found", "warning")
 
     # ── Pillar 4: AI Discoverability ─────────────────────────────────────
-    llm_sec = _pillar_header(4, "AI Discoverability", pillar_scores.get("LLM.txt", 0))
+    llm_sec = _pillar_header(4, "AI Discoverability", pillar_scores.get("AI Discoverability", 0))
     llm_sec += _pill("SITE-LEVEL", B["purple"])
     llm_sec += f'<span style="color:{B["text_secondary"]};font-size:12px;"> llm.txt files + AI Info Page</span><br><br>'
     llm_txt_data = llm_result.get("llm_txt", llm_result.get("files", {}))
