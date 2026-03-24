@@ -950,6 +950,11 @@ if _qp_audit_id and _qp_audit_id != _current_audit_id:
         _dt = (_qp_row.get("audited_at") or "")[:10]
         _sc = _qp_row.get("overall_score", 0)
         st.session_state["_loaded_from_history"] = f"{_d} · {_dt} · {_sc}%"
+    elif _qp_row:
+        # Row found but full_results is missing (old save or failed write).
+        # Clear the stale param so the user isn't stuck in a redirect loop.
+        st.query_params.pop("audit", None)
+        st.warning("The shared report could not be loaded (saved data is incomplete). Please run a new audit.")
 
 tab_audit, tab_history = st.tabs(["\U0001f50d  New Audit", "\U0001f4cb  Past Audits"])
 with tab_audit:
@@ -1406,23 +1411,23 @@ if run_audit or "_audit" in st.session_state:
 
     # ── Unpack results (fresh audit or cached) ────────────────────────────
     _a              = st.session_state["_audit"]
-    all_test_urls   = _a["all_test_urls"]
-    url_labels      = _a["url_labels"]
-    js_results      = _a["js_results"]
-    js_score        = _a["js_score"]
-    robots_result   = _a["robots_result"]
-    robots_score    = _a["robots_score"]
-    schema_results  = _a["schema_results"]
-    schema_score    = _a["schema_score"]
-    llm_result      = _a["llm_result"]
-    llm_score       = _a["llm_score"]
-    semantic_results = _a["semantic_results"]
-    security_result = _a["security_result"]
-    security_score  = _a["security_score"]
-    bot_crawl_results = _a["bot_crawl_results"]
-    overall         = _a["overall"]
-    overall_grade   = _a["overall_grade"]
-    overall_result  = _a["overall_result"]
+    all_test_urls   = _a.get("all_test_urls", [])
+    url_labels      = _a.get("url_labels", {})
+    js_results      = _a.get("js_results", {})
+    js_score        = _a.get("js_score", 0)
+    robots_result   = _a.get("robots_result", {"found": False, "score": 0})
+    robots_score    = _a.get("robots_score", 0)
+    schema_results  = _a.get("schema_results", {})
+    schema_score    = _a.get("schema_score", 0)
+    llm_result      = _a.get("llm_result", {})
+    llm_score       = _a.get("llm_score", 0)
+    semantic_results = _a.get("semantic_results", {})
+    security_result = _a.get("security_result", {"found": False, "score": 0})
+    security_score  = _a.get("security_score", 0)
+    bot_crawl_results = _a.get("bot_crawl_results", {})
+    overall         = _a.get("overall", 0)
+    overall_grade   = _a.get("overall_grade", "?")
+    overall_result  = _a.get("overall_result", {"score": overall, "grade": overall_grade})
     url             = all_test_urls[0]
     parsed          = urlparse(url)
     base_url        = f"{parsed.scheme}://{parsed.netloc}"
