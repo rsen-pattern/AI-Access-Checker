@@ -268,22 +268,15 @@ class ScoreBuilder:
 
 def compute_overall(pillar_scores: dict, robots_missing: bool = False) -> dict:
     """
-    Weighted overall score with hard cap gates.
+    Weighted overall score.
     pillar_scores: {"js": int, "robots": int, "schema": int, "llm": int}
+    If robots.txt is missing the robots pillar should already be 0 (set by caller),
+    which naturally drags the weighted score down by 25% — no artificial cap needed.
     Returns: {"score": int, "grade": dict, "hard_cap_applied": bool, "hard_cap_reason": str}
     """
     weights = {"js": 0.25, "robots": 0.25, "schema": 0.35, "llm": 0.15}
     raw = sum(pillar_scores.get(k, 0) * w for k, w in weights.items())
     overall = round(raw)
-
-    # Hard cap: robots.txt completely missing → overall max 40
-    if robots_missing and overall > 40:
-        return {
-            "score": 40,
-            "grade": get_grade(40),
-            "hard_cap_applied": True,
-            "hard_cap_reason": "robots.txt is missing — AI crawlers have no access instructions for your site",
-        }
 
     return {
         "score": overall,
@@ -368,12 +361,18 @@ def detect_cms(html, url=""):
 #   gap_severity ≥ 0.6:  -50  (hard cap activates at this level)
 #   gap_severity ≥ 0.3:  -30
 #   gap_severity ≥ 0.1:  -15
-#   Critical missing — Product Prices, Navigation Links: -10 each
+#   Critical missing — Product Prices, Navigation Links: -10 each (warn: -5 each)
 #   Text visibility <20%: -15
 #   No JS render API (framework-only fallback):
 #     High-risk framework: -30 | No title: -10 | No H1: -10
 #     Product elements but no prices: -15 | Very little text: -20
 #     No navigation: -10
+#
+# Delta thresholds (compare_html_vs_js):
+#   <5% JS vs HTML difference  → "ok"     (negligible, no impact shown)
+#   5–10% JS vs HTML difference → "warn"   (minor JS dependency)
+#   ≥10% JS vs HTML difference  → "missing" (significant JS dependency)
+#   gap_severity = Σ(1.0 × missing + 0.5 × warn) / total_numeric_metrics
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def fetch_js_rendered(url, get_secret):
@@ -557,8 +556,17 @@ def compare_html_vs_js(html_str, js_str, page_type="homepage"):
             status = "ok" if hv != "Missing" else "missing"
             delta = 0
         else:
-            status = "missing" if jv > hv else "ok"
             delta = jv - hv if jv > hv else 0
+            if jv > hv:
+                delta_ratio = delta / max(jv, 1)
+                if delta_ratio >= 0.10:
+                    status = "missing"      # ≥10% more content needs JS
+                elif delta_ratio >= 0.05:
+                    status = "warn"         # 5–10% minor JS dependency
+                else:
+                    status = "ok"           # <5% negligible difference
+            else:
+                status = "ok"
         comparison.append({
             "name": name, "html_val": hv, "js_val": jv,
             "status": status, "delta": delta,
@@ -566,8 +574,13 @@ def compare_html_vs_js(html_str, js_str, page_type="homepage"):
         })
 
     numeric = [c for c in comparison if not isinstance(c["html_val"], str)]
-    total_missing = sum(1 for c in comparison if c["status"] == "missing")
-    gap_severity = total_missing / max(len(numeric), 1)
+    # "missing" counts fully; "warn" counts as half — produces a fair gap_severity
+    total_missing = sum(1 for c in numeric if c["status"] == "missing")
+    gap_severity = (
+        sum(1.0 if c["status"] == "missing" else 0.5 if c["status"] == "warn" else 0.0
+            for c in numeric)
+        / max(len(numeric), 1)
+    )
 
     return {
         "comparison": comparison,
@@ -615,8 +628,11 @@ def check_js_rendering(url, get_secret):
             sb.add(0, "No significant JS gap detected — content accessible without JavaScript", "js_gap")
 
         for c in comparison["comparison"]:
+            # Only penalise critical fields when the gap is genuinely significant (≥10%)
             if c["status"] == "missing" and c["name"] in ("Product Prices", "Navigation Links"):
                 sb.deduct(10, f"{c['name']} not visible without JS — {c['impact']}", "critical_content")
+            elif c["status"] == "warn" and c["name"] in ("Product Prices", "Navigation Links"):
+                sb.deduct(5, f"{c['name']} partially hidden behind JS (minor gap) — {c['impact']}", "critical_content")
 
         html_t = comparison["html_summary"]["text_content_length"]
         js_t = comparison["js_summary"]["text_content_length"]
@@ -691,55 +707,45 @@ def check_security_exposure(base_url, robots_raw: str = "", homepage_html: str =
     findings = {"critical": [], "backend": [], "customer": [], "dev": [],
                 "html_exposure": [], "robots_allowlist": []}
 
-    # ── 1. AI bots accessing critical paths ──────────────────────────────────
-    critical_exposed_count = 0
+    # ── 1–3. Sensitive path probing (parallelized) ──────────────────────────
+    _path_tasks = []
     for path in SENSITIVE_PATHS["critical"]:
-        resp, err = fetch(base_url + path, timeout=8,
-                          user_agent=AI_BOTS["OpenAI"]["ChatGPT-User"])
-        if resp and resp.status_code not in (403, 404, 401, 410):
-            findings["critical"].append({
-                "path": path, "status": resp.status_code,
-                "risk": "Critical — this path may expose admin or environment data to AI bots",
-                "size": len(resp.text),
-            })
-            if critical_exposed_count < 2:  # cap deduction at -50
-                sb.deduct(25, f"Critical path accessible to AI bots: {path} (HTTP {resp.status_code})", "critical_exposure")
-                critical_exposed_count += 1
-
-    # ── 2. AI bots accessing backend/API paths ────────────────────────────────
-    backend_exposed_count = 0
+        _path_tasks.append(("critical", path, AI_BOTS["OpenAI"]["ChatGPT-User"]))
     for path in SENSITIVE_PATHS["backend"]:
-        resp, err = fetch(base_url + path, timeout=8,
-                          user_agent=AI_BOTS["OpenAI"]["ChatGPT-User"])
-        if resp and resp.status_code not in (403, 404, 401, 410):
-            findings["backend"].append({
-                "path": path, "status": resp.status_code,
-                "risk": "High — API/backend endpoint accessible to AI bots may expose product data or internal structure",
-                "size": len(resp.text),
-            })
-            if backend_exposed_count < 2:  # cap deduction at -30
-                sb.deduct(15, f"Backend path accessible to AI bots: {path} (HTTP {resp.status_code})", "backend_exposure")
-                backend_exposed_count += 1
-
-    # ── 3. AI bots accessing customer/private paths ───────────────────────────
-    customer_exposed_count = 0
+        _path_tasks.append(("backend", path, AI_BOTS["OpenAI"]["ChatGPT-User"]))
     for path in SENSITIVE_PATHS["customer"]:
-        resp, err = fetch(base_url + path, timeout=8,
-                          user_agent=AI_BOTS["Anthropic"]["Claude-User"])
+        _path_tasks.append(("customer", path, AI_BOTS["Anthropic"]["Claude-User"]))
+
+    def _probe_path(category, path, ua):
+        resp, err = fetch(base_url + path, timeout=8, user_agent=ua)
+        return category, path, resp
+
+    _path_results = []
+    with ThreadPoolExecutor(max_workers=6) as _pool:
+        for cat, path, resp in _pool.map(lambda t: _probe_path(*t), _path_tasks):
+            _path_results.append((cat, path, resp))
+
+    _exposed_counts = {"critical": 0, "backend": 0, "customer": 0}
+    _deductions = {"critical": 25, "backend": 15, "customer": 10}
+    _caps = {"critical": 2, "backend": 2, "customer": 2}
+    _risks = {
+        "critical": "Critical — this path may expose admin or environment data to AI bots",
+        "backend": "High — API/backend endpoint accessible to AI bots may expose product data or internal structure",
+        "customer": "Medium — customer area accessible to AI bots",
+    }
+
+    for cat, path, resp in _path_results:
         if resp and resp.status_code not in (403, 404, 401, 410):
-            # For customer paths, check if actual sensitive content is rendered
-            soup = BeautifulSoup(resp.text, "html.parser")
-            page_text = soup.get_text().lower()
-            contains_sensitive = any(kw in page_text for kw in
-                ["order", "address", "credit card", "password", "account details", "billing"])
-            findings["customer"].append({
-                "path": path, "status": resp.status_code,
-                "contains_sensitive_content": contains_sensitive,
-                "risk": "Medium — customer area accessible to AI bots",
-            })
-            if customer_exposed_count < 2:  # cap deduction at -20
-                sb.deduct(10, f"Customer path accessible to AI bots: {path} (HTTP {resp.status_code})", "customer_exposure")
-                customer_exposed_count += 1
+            finding = {"path": path, "status": resp.status_code, "risk": _risks[cat], "size": len(resp.text)}
+            if cat == "customer":
+                soup_c = BeautifulSoup(resp.text, "html.parser")
+                finding["contains_sensitive_content"] = any(
+                    kw in soup_c.get_text().lower()
+                    for kw in ["order", "address", "credit card", "password", "account details", "billing"])
+            findings[cat].append(finding)
+            if _exposed_counts[cat] < _caps[cat]:
+                sb.deduct(_deductions[cat], f"{cat.title()} path accessible to AI bots: {path} (HTTP {resp.status_code})", f"{cat}_exposure")
+                _exposed_counts[cat] += 1
 
     # ── 4. robots.txt explicitly allows sensitive paths to AI bots ───────────
     if robots_raw:
@@ -1011,15 +1017,20 @@ def check_robots_crawlability(base_url, homepage_html):
     }
     raw_data["performance"] = perf
 
-    if dom_size < 1500:
-        sb.add(5, f"Lean DOM ({dom_size} elements) — AI agents can parse HTML efficiently", "performance")
+    # DOM size scoring: ratio-based (elements per KB of text content)
+    _body_text_len = max(len(soup.get_text(strip=True)), 1)
+    _dom_ratio = dom_size / (_body_text_len / 1024)  # elements per KB of text
+    if dom_size < 2000 or _dom_ratio < 50:
+        sb.add(5, f"Lean DOM ({dom_size} elements, {_dom_ratio:.0f} el/KB) — AI agents can parse HTML efficiently", "performance")
+    elif dom_size < 4000 or _dom_ratio < 100:
+        sb.add(2, f"Moderate DOM ({dom_size} elements, {_dom_ratio:.0f} el/KB) — acceptable for AI parsing", "performance")
     else:
-        sb.add(0, f"Large DOM ({dom_size} elements) — bloated HTML increases AI parsing cost", "performance")
+        sb.add(0, f"Heavy DOM ({dom_size} elements, {_dom_ratio:.0f} el/KB) — bloated HTML increases AI parsing cost", "performance")
 
     if len(head_blocking) < 5:
         sb.add(5, f"Few render-blocking scripts ({len(head_blocking)}) — content accessible quickly", "performance")
     else:
-        sb.deduct(0, f"{len(head_blocking)} render-blocking scripts in <head> — may delay content visibility for AI agents", "performance")
+        sb.deduct(5, f"{len(head_blocking)} render-blocking scripts in <head> — delays content visibility for AI agents", "performance")
 
     # Live bot crawl
     def _crawl_bot(url, name, ua, parser):
@@ -1300,6 +1311,7 @@ def check_schema_meta(url):
     offer_schemas = [s for s in schemas if "Offer" in s["type"]]
     has_gtin = any(any(f in s["data"] for f in ["gtin", "gtin13", "gtin8", "gtin14", "mpn"])
                    for s in product_schemas if s["data"])
+    has_sku = any("sku" in s["data"] for s in product_schemas if s["data"])
     has_return_policy = ("MerchantReturnPolicy" in type_set or
                          any("hasMerchantReturnPolicy" in s["data"]
                              for s in offer_schemas if s["data"]))
@@ -1312,8 +1324,10 @@ def check_schema_meta(url):
     if is_product_page:
         if has_gtin:
             sb.add(5, "GTIN/MPN present in Product schema — AI shopping agents can identify and cite this product", "ecommerce")
+        elif has_sku:
+            sb.deduct(4, "Product has SKU but no GTIN/MPN — AI agents can identify it, but global product databases prefer GTINs", "ecommerce")
         else:
-            sb.deduct(15, "Product page missing GTIN/MPN — AI shopping agents exclude or downrank products without identifiers (60% of catalogs affected)", "ecommerce")
+            sb.deduct(8, "Product page missing GTIN/MPN/SKU — AI shopping agents may exclude or downrank unidentifiable products", "ecommerce")
 
         if has_return_policy:
             sb.add(3, "MerchantReturnPolicy schema present — AI agents use this when building shopping recommendations", "ecommerce")
@@ -1354,7 +1368,7 @@ def check_schema_meta(url):
                    "has_date_published": date_schema, "has_date_modified": date_modified,
                    "has_org_schema": org_schema, "has_org_sameas": org_sameas,
                    "authoritative_citations": len(auth_citations), "legal_pages": found_legal},
-        "ecommerce": {"is_product_page": is_product_page, "has_gtin_or_mpn": has_gtin,
+        "ecommerce": {"is_product_page": is_product_page, "has_gtin_or_mpn": has_gtin, "has_sku": has_sku,
                       "has_return_policy_schema": has_return_policy, "has_shipping_schema": has_shipping,
                       "schema_price": schema_price, "price_in_html": price_in_html,
                       "review_schema_depth": has_review, "product_schema_count": len(product_schemas)},
@@ -1405,13 +1419,15 @@ def check_llm_discoverability(base_url, homepage_html):
             if len(text) > 10 and not text.startswith(("<!DOCTYPE", "<html")):
                 found = True
                 content = text[:5000]
+                _word_count = len(text.split())
                 quality = {
-                    "has_title":       bool(re.search(r'^#\s+', text, re.M)),
-                    "has_description": len(text) > 100,
-                    "has_links":       bool(re.search(r'https?://', text)),
-                    "has_sections":    text.count("\n\n") > 2,
+                    "has_title":       bool(re.search(r'^#\s+\S', text, re.M)),
+                    "has_description": len(text) > 200 and _word_count >= 20,
+                    "has_links":       bool(re.search(r'https?://\S+', text)),
+                    "has_sections":    text.count("\n\n") > 2 and _word_count >= 30,
                     "chars":           len(text),
                     "lines":           len(text.splitlines()),
+                    "words":           _word_count,
                 }
                 if llm_found is None:
                     llm_found = {"path": path, "url": u, "quality": quality, "content": content}
@@ -1504,8 +1520,9 @@ def check_llm_discoverability(base_url, homepage_html):
 
     raw_data["ai_info_page"] = ai_info
 
-    # ── 3. Well-Known Files — INFORMATIONAL ONLY, zero score weight ──────────
-    # These are displayed in the UI under "Future Readiness" but do not affect score.
+    # ── 3. Well-Known Files — small bonus for emerging standards ────────────
+    # Each found+valid file earns +2 pts (max +8 from 4 files) to fill the
+    # pillar ceiling to 100.  Deprecated files earn 0.
     wellknown_checks = {
         "/.well-known/ucp": {
             "description": "Universal Commerce Protocol — allows AI shopping agents to discover checkout capabilities",
@@ -1538,11 +1555,16 @@ def check_llm_discoverability(base_url, homepage_html):
                 found = True
                 try: json.loads(text); valid = True
                 except: valid = False
+        # Emerging/niche standards earn +2 if found+valid; deprecated earn 0
+        pts = 0
+        if found and meta["status"] in ("emerging", "niche"):
+            pts = 2
+            sb.add(2, f"{path} found — early adopter of {meta['description'].split('—')[0].strip()}", "wellknown")
         raw_data["wellknown"][path] = {
             "found": found, "url": u, "valid_json": valid,
             "description": meta["description"], "status": meta["status"],
             "note": meta["note"],
-            "score_contribution": 0,  # explicit zero — these never affect score
+            "score_contribution": pts,
         }
 
     result = sb.to_dict()
