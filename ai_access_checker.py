@@ -194,7 +194,10 @@ def _sanitise_for_db(obj, _depth=0):
         return [_sanitise_for_db(i, _depth + 1) for i in obj]
     if isinstance(obj, str) and len(obj) > 8000:
         return obj[:8000] + "…[truncated]"
-    return obj
+    if isinstance(obj, (bool, int, float)) or obj is None:
+        return obj
+    # Non-serializable type (e.g. Protego parser object) — drop it
+    return None
 
 
 def save_audit_to_db(domain, overall, pillar_scores_dict, audited_urls, full_results=None):
@@ -221,16 +224,19 @@ def load_audit_history(domain=None, limit=10):
     sb = get_supabase()
     if not sb:
         return []
-    try:
-        q = (sb.table("audits")
-               .select("id,domain,audited_at,overall_score,pillar_scores,urls,full_results")
-               .order("audited_at", desc=True)
-               .limit(limit))
-        if domain:
-            q = q.eq("domain", domain)
-        return q.execute().data or []
-    except Exception:
-        return []
+    for cols in ("id,domain,audited_at,overall_score,pillar_scores,urls,full_results",
+                 "id,domain,audited_at,overall_score,pillar_scores,urls"):
+        try:
+            q = (sb.table("audits")
+                   .select(cols)
+                   .order("audited_at", desc=True)
+                   .limit(limit))
+            if domain:
+                q = q.eq("domain", domain)
+            return q.execute().data or []
+        except Exception:
+            continue
+    return []
 
 
 def normalise_url(url: str) -> str:
