@@ -1121,6 +1121,9 @@ with tab_history:
                     if _audit_id and _has_full:
                         if st.button("🔗", key=f"share_{_audit_id}", help="Set shareable link in address bar"):
                             st.query_params["audit"] = str(_audit_id)
+                            # Keep _loaded_audit_id in sync so the top-of-script
+                            # ?audit= reload guard doesn't swap the displayed results.
+                            st.session_state["_loaded_audit_id"] = str(_audit_id)
                             st.session_state[f"_shared_{_audit_id}"] = True
                         if st.session_state.get(f"_shared_{_audit_id}"):
                             st.markdown(f'<div style="font-size:10px;color:{BRAND["teal"]};">URL updated ✓</div>', unsafe_allow_html=True)
@@ -1437,6 +1440,9 @@ if run_audit or "_audit" in st.session_state:
             if _sr.get("nosnippet_elements", 0) > 5:           _ps -= 10
             _sem_scores.append(max(0, _ps))
     semantic_score = round(sum(_sem_scores) / len(_sem_scores)) if _sem_scores else 0
+    # Keep _audit in sync so every path (fresh run, history load, shared link)
+    # has the same key set.
+    st.session_state["_audit"]["semantic_score"] = semantic_score
 
     # ── Save new audit to Supabase (fresh runs only) ──────────────────────
     if run_audit:
@@ -1476,6 +1482,8 @@ if run_audit or "_audit" in st.session_state:
         if _saved_id:
             st.query_params["audit"] = str(_saved_id)
             st.session_state["_loaded_audit_id"] = str(_saved_id)
+        elif get_supabase() is None:
+            st.info("Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets to save audits and generate shareable links.")
 
     with tab_audit:
         # ══════════════════════════════════════════════════════════════════════
