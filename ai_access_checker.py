@@ -182,18 +182,36 @@ def get_supabase():
     return None
 
 
-def save_audit_to_db(domain, overall, pillar_scores_dict, audited_urls):
-    """Persist audit summary to Supabase. Silently no-ops if DB not configured."""
+def _sanitise_for_db(obj, _depth=0):
+    """Recursively sanitise audit data for DB storage.
+    Truncates long strings to prevent Supabase row-size issues.
+    Stops recursing beyond depth 8 to guard against weird structures."""
+    if _depth > 8:
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitise_for_db(v, _depth + 1) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitise_for_db(i, _depth + 1) for i in obj]
+    if isinstance(obj, str) and len(obj) > 8000:
+        return obj[:8000] + "…[truncated]"
+    return obj
+
+
+def save_audit_to_db(domain, overall, pillar_scores_dict, audited_urls, full_results=None):
+    """Persist full audit results to Supabase. Silently no-ops if DB not configured."""
     sb = get_supabase()
     if not sb:
         return
     try:
-        sb.table("audits").insert({
+        row = {
             "domain":        domain,
             "overall_score": overall,
             "pillar_scores": json.dumps(pillar_scores_dict),
             "urls":          audited_urls,
-        }).execute()
+        }
+        if full_results is not None:
+            row["full_results"] = _sanitise_for_db(full_results)
+        sb.table("audits").insert(row).execute()
     except Exception:
         pass  # Never crash the app due to a DB write failure
 
@@ -205,7 +223,7 @@ def load_audit_history(domain=None, limit=10):
         return []
     try:
         q = (sb.table("audits")
-               .select("id,domain,audited_at,overall_score,pillar_scores")
+               .select("id,domain,audited_at,overall_score,pillar_scores,urls,full_results")
                .order("audited_at", desc=True)
                .limit(limit))
         if domain:
@@ -949,6 +967,30 @@ with tab_history:
             unsafe_allow_html=True
         )
 
+        # ── Load Report buttons ─────────────────────────────────────────────
+        st.markdown(f'<div style="margin-top:16px;color:{BRAND["text_secondary"]};font-size:12px;margin-bottom:6px;">Click a row to load its full report:</div>', unsafe_allow_html=True)
+        for _row in _rows:
+            _fr = _row.get("full_results")
+            _dom  = _row.get("domain", "—")
+            _date = (_row.get("audited_at") or "")[:10]
+            _sc   = _row.get("overall_score", 0)
+            _label = f"{_dom} · {_date} · {_sc}%"
+            _has_full = _fr is not None and isinstance(_fr, dict) and "js_results" in _fr
+            _btn_col, _info_col = st.columns([3, 5])
+            with _btn_col:
+                if st.button(f"📋 {_label}", key=f"load_{_row.get('id', _label)}", disabled=not _has_full, use_container_width=True):
+                    st.session_state["_audit"] = _fr
+                    st.session_state["_loaded_from_history"] = _label
+                    st.rerun()
+            with _info_col:
+                if not _has_full:
+                    st.markdown(f'<div style="padding:6px 0;color:{BRAND["text_secondary"]};font-size:11px;">⚠ Saved before full-result storage was enabled</div>', unsafe_allow_html=True)
+                else:
+                    _url_count = len(_fr.get("all_test_urls") or [])
+                    st.markdown(f'<div style="padding:6px 0;color:{BRAND["text_secondary"]};font-size:11px;">{_url_count} URLs · all pillar data available</div>', unsafe_allow_html=True)
+
+        if st.session_state.get("_loaded_from_history"):
+            st.success(f"Report loaded: **{st.session_state['_loaded_from_history']}** — switch to the **New Audit** tab to view it.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1174,6 +1216,26 @@ if run_audit or "_audit" in st.session_state:
                 "Security":           security_score,
             },
             audited_urls=all_test_urls,
+            full_results={
+                "all_test_urls":     all_test_urls,
+                "url_labels":        url_labels,
+                "js_results":        js_results,
+                "js_score":          js_score,
+                "robots_result":     robots_result,
+                "robots_score":      robots_score,
+                "schema_results":    schema_results,
+                "schema_score":      schema_score,
+                "llm_result":        llm_result,
+                "llm_score":         llm_score,
+                "semantic_results":  semantic_results,
+                "semantic_score":    semantic_score,
+                "security_result":   security_result,
+                "security_score":    security_score,
+                "bot_crawl_results": bot_crawl_results,
+                "overall":           overall,
+                "overall_grade":     overall_grade,
+                "overall_result":    overall_result,
+            },
         )
 
     # ══════════════════════════════════════════════════════════════════════
