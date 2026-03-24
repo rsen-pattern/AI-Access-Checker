@@ -931,12 +931,15 @@ st.markdown(f'<div style="text-align:center;color:{BRAND["text_secondary"]};font
 
 # ── SHARED LINK: load audit from ?audit=<id> query param ─────────────────────
 # Requires authentication — unauthenticated visitors see the Past Audits login
+# Reload if the requested audit ID differs from the currently loaded one
 _qp_audit_id = st.query_params.get("audit")
-if _qp_audit_id and "_audit" not in st.session_state and is_history_authenticated():
+_current_audit_id = st.session_state.get("_loaded_audit_id")
+if _qp_audit_id and _qp_audit_id != _current_audit_id and is_history_authenticated():
     _qp_row = load_audit_by_id(_qp_audit_id)
     if _qp_row and _qp_row.get("full_results"):
         _fr = _qp_row["full_results"]
         st.session_state["_audit"] = _fr
+        st.session_state["_loaded_audit_id"] = _qp_audit_id
         _d = _qp_row.get("domain", "?")
         _dt = (_qp_row.get("audited_at") or "")[:10]
         _sc = _qp_row.get("overall_score", 0)
