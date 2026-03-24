@@ -16,6 +16,8 @@ import re
 import time
 import math
 import base64
+import io
+import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ─── FAVICON: Pattern logo as base64 PNG-via-SVG ─────────────────────────────
@@ -1071,6 +1073,23 @@ with tab_history:
             unsafe_allow_html=True
         )
 
+        # ── CSV Export ─────────────────────────────────────────────────────────
+        _csv_buf = io.StringIO()
+        _csv_w = csv.writer(_csv_buf)
+        _csv_w.writerow(["Domain", "Date", "Overall Score", "Grade"] + _PILLARS)
+        for _row in _rows:
+            _dom = _row.get("domain", "")
+            _date = (_row.get("audited_at") or "")[:10]
+            _sc = _row.get("overall_score", 0)
+            _g = next((v for k, v in sorted(_grade_map.items(), reverse=True) if _sc >= k), "F")
+            try:
+                _ps = json.loads(_row.get("pillar_scores") or "{}")
+            except Exception:
+                _ps = {}
+            _csv_w.writerow([_dom, _date, _sc, _g] + [_ps.get(p, 0) for p in _PILLARS])
+        st.download_button("Download CSV", _csv_buf.getvalue(), "audit_history.csv", "text/csv",
+                           use_container_width=False, key="csv_export")
+
         # ── Load Report buttons ─────────────────────────────────────────────
         st.markdown(f'<div style="margin-top:16px;color:{BRAND["text_secondary"]};font-size:12px;margin-bottom:6px;">Load or share a full report:</div>', unsafe_allow_html=True)
         for _row in _rows:
@@ -1119,6 +1138,67 @@ with tab_history:
 
         if st.session_state.get("_loaded_from_history"):
             st.success(f"Report loaded: **{st.session_state['_loaded_from_history']}** — switch to the **New Audit** tab to view it. You can also share the current URL.")
+
+        # ── Before / After Comparison ─────────────────────────────────────────
+        _comp_domains = [d for d in _domains_list if sum(1 for r in _rows if r.get("domain") == d) >= 2]
+        if _comp_domains:
+            st.markdown(f'<div style="font-size:18px;font-weight:700;color:{BRAND["white"]};margin:24px 0 8px 0;">Before / After Comparison</div>', unsafe_allow_html=True)
+            _comp_dom = st.selectbox("Domain", _comp_domains, key="comp_domain")
+            _dom_rows = sorted(
+                [r for r in _rows if r.get("domain") == _comp_dom],
+                key=lambda r: r.get("audited_at") or "", reverse=True
+            )
+            _comp_options = [f"{(_r.get('audited_at') or '')[:10]}  —  {_r.get('overall_score', 0)}%" for _r in _dom_rows]
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                _before_idx = st.selectbox("Before (older)", range(len(_comp_options)),
+                    format_func=lambda i: _comp_options[i], index=min(1, len(_dom_rows)-1), key="comp_before")
+            with _c2:
+                _after_idx = st.selectbox("After (newer)", range(len(_comp_options)),
+                    format_func=lambda i: _comp_options[i], index=0, key="comp_after")
+            _before = _dom_rows[_before_idx]
+            _after = _dom_rows[_after_idx]
+            try:
+                _ps_b = json.loads(_before.get("pillar_scores") or "{}")
+            except Exception:
+                _ps_b = {}
+            try:
+                _ps_a = json.loads(_after.get("pillar_scores") or "{}")
+            except Exception:
+                _ps_a = {}
+            _sc_b = _before.get("overall_score", 0)
+            _sc_a = _after.get("overall_score", 0)
+            _diff = _sc_a - _sc_b
+            _diff_color = BRAND["teal"] if _diff > 0 else BRAND["danger"] if _diff < 0 else BRAND["text_secondary"]
+            _diff_sign = "+" if _diff > 0 else ""
+            st.markdown(
+                f'<div style="display:flex;gap:16px;margin:12px 0;">'
+                f'<div style="flex:1;background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:10px;padding:16px;text-align:center;">'
+                f'<div style="font-size:11px;color:{BRAND["text_secondary"]};text-transform:uppercase;">Before</div>'
+                f'<div style="font-size:28px;font-weight:800;color:{BRAND["white"]};">{_sc_b}%</div>'
+                f'<div style="font-size:11px;color:{BRAND["text_secondary"]};">{(_before.get("audited_at") or "")[:10]}</div></div>'
+                f'<div style="flex:0.5;display:flex;align-items:center;justify-content:center;">'
+                f'<div style="font-size:24px;font-weight:800;color:{_diff_color};">{_diff_sign}{_diff}pts</div></div>'
+                f'<div style="flex:1;background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:10px;padding:16px;text-align:center;">'
+                f'<div style="font-size:11px;color:{BRAND["text_secondary"]};text-transform:uppercase;">After</div>'
+                f'<div style="font-size:28px;font-weight:800;color:{BRAND["white"]};">{_sc_a}%</div>'
+                f'<div style="font-size:11px;color:{BRAND["text_secondary"]};">{(_after.get("audited_at") or "")[:10]}</div></div></div>',
+                unsafe_allow_html=True
+            )
+            # Per-pillar diff
+            _pdiff_html = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;">'
+            for p in _PILLARS:
+                _pb = _ps_b.get(p, 0); _pa = _ps_a.get(p, 0); _pd = _pa - _pb
+                _pc = BRAND["teal"] if _pd > 0 else BRAND["danger"] if _pd < 0 else BRAND["text_secondary"]
+                _ps_sign = "+" if _pd > 0 else ""
+                _pdiff_html += (
+                    f'<div style="flex:1;min-width:120px;background:{BRAND["bg_surface"]};border-radius:8px;padding:10px;text-align:center;">'
+                    f'<div style="font-size:10px;color:{BRAND["text_secondary"]};text-transform:uppercase;">{p}</div>'
+                    f'<div style="font-size:14px;font-weight:700;color:{BRAND["white"]};">{_pb} → {_pa}</div>'
+                    f'<div style="font-size:12px;font-weight:700;color:{_pc};">{_ps_sign}{_pd}</div></div>'
+                )
+            _pdiff_html += '</div>'
+            st.markdown(_pdiff_html, unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
