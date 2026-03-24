@@ -192,8 +192,8 @@ def _sanitise_for_db(obj, _depth=0):
         return {k: _sanitise_for_db(v, _depth + 1) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_sanitise_for_db(i, _depth + 1) for i in obj]
-    if isinstance(obj, str) and len(obj) > 8000:
-        return obj[:8000] + "…[truncated]"
+    if isinstance(obj, str):
+        return obj[:8000] + "…[truncated]" if len(obj) > 8000 else obj
     if isinstance(obj, (bool, int, float)) or obj is None:
         return obj
     # Non-serializable type (e.g. Protego parser object) — drop it
@@ -487,6 +487,8 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
             js_sec += f'<div style="font-weight:700;color:{B["white"]};font-size:14px;margin:12px 0 6px 0;">HTML vs JavaScript — What AI Crawlers Miss:</div>'
             js_sec += f'<table style="width:100%;border-collapse:collapse;font-size:13px;"><tr style="background:{B["bg_surface"]};"><th style="padding:7px 10px;text-align:left;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;letter-spacing:1px;">Content</th><th style="padding:7px 10px;text-align:center;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;">HTML (Crawler)</th><th style="padding:7px 10px;text-align:center;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;">JS (Browser)</th><th style="padding:7px 10px;text-align:left;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;">Impact</th></tr>'
             for c in comp["comparison"]:
+                if not c.get("name"):
+                    continue
                 if c["status"] == "missing":
                     bg = f"{B['danger']}15"; sc = B["danger"]; label = "MISSING"
                 elif c["status"] == "warn":
@@ -1408,6 +1410,9 @@ if run_audit or "_audit" in st.session_state:
                     st.markdown(f'<div style="display:flex;padding:8px 12px;background:{BRAND["bg_surface"]};border-radius:8px 8px 0 0;font-weight:600;font-size:12px;color:{BRAND["text_secondary"]};text-transform:uppercase;letter-spacing:1px;"><div style="flex:2;">Content</div><div style="flex:1;text-align:center;">HTML (Crawler)</div><div style="flex:1;text-align:center;">JS (Browser)</div><div style="flex:2;">Impact</div></div>', unsafe_allow_html=True)
 
                     for c in comp["comparison"]:
+                        # Guard against pre-fix rows where strings were stored as null
+                        if not c.get("name"):
+                            continue
                         html_v = str(c["html_val"])
                         js_v = str(c["js_val"])
                         if c["status"] == "missing":
@@ -1514,7 +1519,7 @@ if run_audit or "_audit" in st.session_state:
                     if len(blocked) > 10:
                         st.caption(f"…and {len(blocked) - 10} more")
             with st.expander("Raw robots.txt"):
-                st.code(robots_result.get("raw", "")[:8000], language="text")
+                st.code((robots_result.get("raw") or "")[:8000], language="text")
         else:
             robots_url = robots_result.get("robots", {}).get("url", robots_result.get("url", ""))
             st.markdown(brand_status(f"No robots.txt found at {robots_url}", "danger"), unsafe_allow_html=True)
