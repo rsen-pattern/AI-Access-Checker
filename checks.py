@@ -1270,13 +1270,20 @@ def check_schema_meta(url):
     has_review = any(d.get("@type") in ("Review", "AggregateRating") for d in jsonld)
     has_sameas_anywhere = any("sameAs" in d for d in jsonld)
 
+    # Author and publication date are only relevant for editorial/blog content.
+    # Penalising product pages or category pages for missing these is misleading.
+    is_article_page = any(d.get("@type") in ("Article", "BlogPosting", "NewsArticle", "TechArticle", "WebPage") for d in jsonld)
+    is_ecommerce_page = any("Product" in str(d.get("@type", "")) for d in jsonld)
+
     if author_schema or author_el:
         sb.add(5, "Author attribution present — E-E-A-T signal for AI trust scoring", "entity")
-    else:
-        sb.add(0, "No author attribution — AI may not trust or cite anonymous content", "entity")
+    elif is_article_page and not is_ecommerce_page:
+        sb.add(0, "No author attribution — AI may not trust or cite anonymous editorial content", "entity")
 
     if date_schema:
         sb.add(3, "Publication date in schema — AI can assess content freshness", "entity")
+    elif is_article_page and not is_ecommerce_page:
+        sb.add(0, "No publication date in schema — AI cannot assess freshness of this content", "entity")
     if date_modified:
         sb.add(2, "Date modified in schema — AI knows content is actively maintained", "entity")
 
@@ -1614,7 +1621,10 @@ def _bifrost_call(api_key: str, prompt: str, max_tokens: int = 700) -> str | Non
             "https://bifrost.pattern.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={"model": "openai/gpt-4o-mini", "max_tokens": max_tokens,
-                  "temperature": 0.3, "messages": [{"role": "user", "content": prompt}]},
+                  "temperature": 0.3, "messages": [
+                      {"role": "system", "content": "You write in Australian English. Use Australian spelling and vocabulary throughout (e.g. optimise, analyse, catalogue, organisation, colour, prioritise)."},
+                      {"role": "user", "content": prompt},
+                  ]},
             timeout=30,
         )
         if resp.status_code == 200:
@@ -1673,7 +1683,7 @@ Provide exactly:
 3. TOP 3 QUICK WINS THIS WEEK: Actions completable in under 2 hours each. Be specific and practical.
 4. STRATEGIC RECOMMENDATION: One higher-effort initiative for this quarter with expected impact.
 
-Use Australian English. Be direct and specific. No jargon. One concrete action per point. Focus on business impact.""")
+Be direct and specific. No jargon. One concrete action per point. Focus on business impact.""")
 
 
 def analyse_schema_quality(url, schema_data, get_secret) -> str | None:
