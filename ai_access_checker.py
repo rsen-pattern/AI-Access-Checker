@@ -928,8 +928,9 @@ st.markdown(f'<div style="text-align:center;padding:0.3rem 0;"><span style="font
 st.markdown(f'<div style="text-align:center;color:{BRAND["text_secondary"]};font-size:0.9rem;margin-bottom:1.5rem;">Full LLM Access Audit · JavaScript Rendering · LLM.txt · Robots.txt · Schema</div>', unsafe_allow_html=True)
 
 # ── SHARED LINK: load audit from ?audit=<id> query param ─────────────────────
+# Requires authentication — unauthenticated visitors see the Past Audits login
 _qp_audit_id = st.query_params.get("audit")
-if _qp_audit_id and "_audit" not in st.session_state:
+if _qp_audit_id and "_audit" not in st.session_state and is_history_authenticated():
     _qp_row = load_audit_by_id(_qp_audit_id)
     if _qp_row and _qp_row.get("full_results"):
         _fr = _qp_row["full_results"]
@@ -994,7 +995,7 @@ with tab_history:
                         st.session_state["_history_user"] = _user
                         st.rerun()
                     else:
-                        st.error(f"Login failed: {_err}")
+                        st.error("Login failed — check your email and password.")
                 else:
                     st.warning("Enter your email and password.")
         st.stop()
@@ -1508,15 +1509,18 @@ if run_audit or "_audit" in st.session_state:
                         st.markdown(f'<div style="display:flex;padding:6px 12px;border-bottom:1px solid {BRAND["border"]};background:{row_bg};align-items:center;"><div style="flex:2;color:{BRAND["white"]};font-size:13px;">{c["name"]}</div><div style="flex:1;text-align:center;color:{html_color};font-weight:700;font-size:13px;">{html_v}</div><div style="flex:1;text-align:center;color:{js_color};font-size:13px;">{js_v}</div><div style="flex:2;">{impact_html}</div></div>', unsafe_allow_html=True)
 
                     # Text content gap highlight
-                    html_text = comp["html_summary"]["text_content_length"]
-                    js_text = comp["js_summary"]["text_content_length"]
+                    html_text = comp.get("html_summary", {}).get("text_content_length", 0)
+                    js_text = comp.get("js_summary", {}).get("text_content_length", 0)
                     if js_text > html_text:
                         pct = round(html_text / max(js_text, 1) * 100)
                         gap_color = BRAND["danger"] if pct < 30 else BRAND["warning"] if pct < 70 else BRAND["teal"]
                         st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:10px;padding:14px 18px;margin:12px 0;"><div style="font-size:11px;color:{BRAND["text_secondary"]};text-transform:uppercase;letter-spacing:1px;">Content Visibility</div><div style="font-size:20px;font-weight:700;color:{gap_color};">{pct}% <span style="font-size:14px;opacity:0.5;">of content visible to AI</span></div><div style="font-size:12px;color:{BRAND["text_secondary"]};">HTML: {html_text:,} chars · JS-rendered: {js_text:,} chars · Hidden: {js_text - html_text:,} chars</div></div>', unsafe_allow_html=True)
 
                     # AI Analysis
-                    ai_analysis = ai_analyse_js_gap(test_url, comp, label, get_secret)
+                    try:
+                        ai_analysis = ai_analyse_js_gap(test_url, comp, label, get_secret)
+                    except Exception:
+                        ai_analysis = None
                     if ai_analysis:
                         st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
                         st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{ai_analysis}</div>', unsafe_allow_html=True)
@@ -1532,19 +1536,20 @@ if run_audit or "_audit" in st.session_state:
                         for rf in js_r["risk_factors"]:
                             st.markdown(brand_status(rf, "warning"), unsafe_allow_html=True)
 
-                    c = js_r["content"]
-                    st.markdown("**Content Visible in Raw HTML:**")
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        st.markdown(brand_status(f"Title: {c['title'] or 'Missing'}", "success" if c["title"] else "danger"), unsafe_allow_html=True)
-                        st.markdown(brand_status(f"Meta Desc: {'Present' if c['meta_description'] else 'Missing'}", "success" if c["meta_description"] else "danger"), unsafe_allow_html=True)
-                        st.markdown(brand_status(f"H1 Tags: {len(c['h1_tags'])}", "success" if c["h1_tags"] else "warning"), unsafe_allow_html=True)
-                        st.markdown(brand_status(f"Prices: {len(c['prices'])} found", "success" if c["prices"] else "info"), unsafe_allow_html=True)
-                    with col_b:
-                        st.markdown(brand_status(f"Nav Links: {c['nav_links']}", "success" if c["nav_links"] else "warning"), unsafe_allow_html=True)
-                        st.markdown(brand_status(f"Total Links: {c['total_links']}", "success" if c["total_links"] else "warning"), unsafe_allow_html=True)
-                        st.markdown(brand_status(f"Images (alt): {c['images_with_alt']} / (no alt): {c['images_without_alt']}", "success" if not c["images_without_alt"] else "warning"), unsafe_allow_html=True)
-                        st.markdown(brand_status(f"Text: {c['text_content_length']:,} chars", "success" if c["text_content_length"] > 500 else "warning"), unsafe_allow_html=True)
+                    c = js_r.get("content") or {}
+                    if c:
+                        st.markdown("**Content Visible in Raw HTML:**")
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.markdown(brand_status(f"Title: {c.get('title') or 'Missing'}", "success" if c.get("title") else "danger"), unsafe_allow_html=True)
+                            st.markdown(brand_status(f"Meta Desc: {'Present' if c.get('meta_description') else 'Missing'}", "success" if c.get("meta_description") else "danger"), unsafe_allow_html=True)
+                            st.markdown(brand_status(f"H1 Tags: {len(c.get('h1_tags') or [])}", "success" if c.get("h1_tags") else "warning"), unsafe_allow_html=True)
+                            st.markdown(brand_status(f"Prices: {len(c.get('prices') or [])} found", "success" if c.get("prices") else "info"), unsafe_allow_html=True)
+                        with col_b:
+                            st.markdown(brand_status(f"Nav Links: {c.get('nav_links', 0)}", "success" if c.get("nav_links") else "warning"), unsafe_allow_html=True)
+                            st.markdown(brand_status(f"Total Links: {c.get('total_links', 0)}", "success" if c.get("total_links") else "warning"), unsafe_allow_html=True)
+                            st.markdown(brand_status(f"Images (alt): {c.get('images_with_alt', 0)} / (no alt): {c.get('images_without_alt', 0)}", "success" if not c.get("images_without_alt") else "warning"), unsafe_allow_html=True)
+                            st.markdown(brand_status(f"Text: {c.get('text_content_length', 0):,} chars", "success" if c.get("text_content_length", 0) > 500 else "warning"), unsafe_allow_html=True)
 
         # ══════════════════════════════════════════════════════════════════════
         # PILLAR 2: ROBOTS & CRAWLABILITY
@@ -1571,14 +1576,16 @@ if run_audit or "_audit" in st.session_state:
                                 st.markdown(brand_status(f"**{bot_name}**: Blocked", "danger"), unsafe_allow_html=True)
                             else:
                                 st.markdown(brand_status(f"**{bot_name}**: Unknown", "warning"), unsafe_allow_html=True)
-            if robots_result["sitemaps"]:
-                with st.expander(f"Sitemaps ({len(robots_result['sitemaps'])} found)"):
-                    for sm in robots_result["sitemaps"]:
+            _sitemaps = robots_result.get("sitemaps") or []
+            if _sitemaps:
+                with st.expander(f"Sitemaps ({len(_sitemaps)} found)"):
+                    for sm in _sitemaps:
                         st.markdown(brand_status(sm, "success"), unsafe_allow_html=True)
             else:
                 st.markdown(brand_status("No sitemaps in robots.txt", "warning"), unsafe_allow_html=True)
-            if robots_result["blocked_resources"]:
-                st.markdown(brand_status(f"Blocked resources: {', '.join(robots_result['blocked_resources'])}", "danger"), unsafe_allow_html=True)
+            _blocked_res = robots_result.get("blocked_resources") or []
+            if _blocked_res:
+                st.markdown(brand_status(f"Blocked resources: {', '.join(_blocked_res)}", "danger"), unsafe_allow_html=True)
             else:
                 st.markdown(brand_status("CSS/JS not blocked — AI agents can render pages", "success"), unsafe_allow_html=True)
             exposed = [(p, r) for p, r in robots_result.get("sensitive_paths", {}).items() if not r.get("blocked", not r.get("accessible_per_robots", False))]
@@ -1599,7 +1606,10 @@ if run_audit or "_audit" in st.session_state:
             st.markdown(brand_status(f"No robots.txt found at {robots_url}", "danger"), unsafe_allow_html=True)
 
         # AI Analysis — What This Means
-        robots_ai = analyse_robots_access(parsed.netloc, robots_result, get_secret)
+        try:
+            robots_ai = analyse_robots_access(parsed.netloc, robots_result, get_secret)
+        except Exception:
+            robots_ai = None
         if robots_ai:
             st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
             st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{robots_ai}</div>', unsafe_allow_html=True)
@@ -1696,7 +1706,10 @@ if run_audit or "_audit" in st.session_state:
                     st.markdown(brand_status("No Schema.org structured data found on this page", "warning"), unsafe_allow_html=True)
 
                 # AI Analysis — What This Means
-                schema_ai = analyse_schema_quality(test_url, schemas, get_secret)
+                try:
+                    schema_ai = analyse_schema_quality(test_url, schemas, get_secret)
+                except Exception:
+                    schema_ai = None
                 if schema_ai:
                     st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
                     st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{schema_ai}</div>', unsafe_allow_html=True)
@@ -1760,7 +1773,10 @@ if run_audit or "_audit" in st.session_state:
                     st.markdown(brand_status(f"+{pts} pts — {lbl}", s), unsafe_allow_html=True)
 
         # AI Analysis — What This Means
-        llm_ai = analyse_llm_discoverability(parsed.netloc, llm_result, get_secret)
+        try:
+            llm_ai = analyse_llm_discoverability(parsed.netloc, llm_result, get_secret)
+        except Exception:
+            llm_ai = None
         if llm_ai:
             st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
             st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{llm_ai}</div>', unsafe_allow_html=True)
@@ -1839,7 +1855,10 @@ if run_audit or "_audit" in st.session_state:
                         st.markdown(brand_status(f"Text-to-HTML ratio: {ratio:.1f}%", "success" if ratio >= 15 else "warning"), unsafe_allow_html=True)
 
                 # AI Analysis — What This Means
-                sem_ai = analyse_semantic_hierarchy(test_url, sem_r, label, get_secret)
+                try:
+                    sem_ai = analyse_semantic_hierarchy(test_url, sem_r, label, get_secret)
+                except Exception:
+                    sem_ai = None
                 if sem_ai:
                     st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
                     st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{sem_ai}</div>', unsafe_allow_html=True)
@@ -1995,7 +2014,10 @@ if run_audit or "_audit" in st.session_state:
                     },
                 }
 
-                brain_analysis = pattern_brain_analysis(parsed.netloc, all_results_for_brain, get_secret)
+                try:
+                    brain_analysis = pattern_brain_analysis(parsed.netloc, all_results_for_brain, get_secret)
+                except Exception:
+                    brain_analysis = None
 
             if brain_analysis:
                 st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:12px;padding:20px 24px;margin:8px 0;"><div style="color:{BRAND["white"]};font-size:14px;line-height:1.7;">{_md_to_html(brain_analysis)}</div></div>', unsafe_allow_html=True)
