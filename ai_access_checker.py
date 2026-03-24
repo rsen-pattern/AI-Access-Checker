@@ -168,6 +168,53 @@ def get_secret(key, default=""):
         return default
 
 
+@st.cache_resource
+def get_supabase():
+    """Return a Supabase client, or None if SUPABASE_URL/KEY not configured."""
+    try:
+        from supabase import create_client
+        url = get_secret("SUPABASE_URL", "")
+        key = get_secret("SUPABASE_KEY", "")
+        if url and key:
+            return create_client(url, key)
+    except Exception:
+        pass
+    return None
+
+
+def save_audit_to_db(domain, overall, pillar_scores_dict, audited_urls):
+    """Persist audit summary to Supabase. Silently no-ops if DB not configured."""
+    sb = get_supabase()
+    if not sb:
+        return
+    try:
+        sb.table("audits").insert({
+            "domain":        domain,
+            "overall_score": overall,
+            "pillar_scores": json.dumps(pillar_scores_dict),
+            "urls":          audited_urls,
+        }).execute()
+    except Exception:
+        pass  # Never crash the app due to a DB write failure
+
+
+def load_audit_history(domain=None, limit=10):
+    """Load past audits from Supabase. Returns a list of row dicts or []."""
+    sb = get_supabase()
+    if not sb:
+        return []
+    try:
+        q = (sb.table("audits")
+               .select("id,domain,audited_at,overall_score,pillar_scores")
+               .order("audited_at", desc=True)
+               .limit(limit))
+        if domain:
+            q = q.eq("domain", domain)
+        return q.execute().data or []
+    except Exception:
+        return []
+
+
 def normalise_url(url: str) -> str:
     url = url.strip()
     if not url.startswith(("http://", "https://")):
@@ -829,6 +876,51 @@ with st.expander("⚙️  Advanced Options"):
 
 run_audit = st.button("Run Audit", type="primary", use_container_width=True)
 
+# ── AUDIT HISTORY SIDEBAR ─────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown(f'<div style="font-size:16px;font-weight:700;color:{BRAND["white"]};margin-bottom:4px;">Audit History</div>', unsafe_allow_html=True)
+
+    # Derive domain from homepage input for filtered history
+    _hist_domain = None
+    if home_url and home_url.strip():
+        try:
+            _hist_domain = urlparse(normalise_url(home_url.strip())).netloc
+        except Exception:
+            pass
+
+    _history = load_audit_history(_hist_domain, limit=15)
+
+    if get_supabase() is None:
+        st.markdown(f'<div style="color:{BRAND["text_secondary"]};font-size:12px;line-height:1.6;">Add <code>SUPABASE_URL</code> and <code>SUPABASE_KEY</code> to your Streamlit secrets to enable audit history storage.</div>', unsafe_allow_html=True)
+    elif not _history:
+        st.markdown(f'<div style="color:{BRAND["text_secondary"]};font-size:12px;">No audits saved yet. Run your first audit!</div>', unsafe_allow_html=True)
+    else:
+        if _hist_domain:
+            st.markdown(f'<div style="color:{BRAND["text_secondary"]};font-size:11px;margin-bottom:8px;">Showing history for <strong style="color:{BRAND["primary"]};">{_hist_domain}</strong></div>', unsafe_allow_html=True)
+        for _row in _history:
+            _sc    = _row.get("overall_score", 0)
+            _sc_c  = BRAND["teal"] if _sc >= 75 else BRAND["warning"] if _sc >= 50 else BRAND["danger"]
+            _ts    = (_row.get("audited_at") or "")[:10]
+            _dom   = _row.get("domain", "")
+            _pills = ""
+            try:
+                _ps = json.loads(_row.get("pillar_scores") or "{}")
+                for _pn, _pv in _ps.items():
+                    _pc = BRAND["teal"] if _pv >= 75 else BRAND["warning"] if _pv >= 50 else BRAND["danger"]
+                    _short = _pn.split()[0]  # "JS", "Robots", "Schema", etc.
+                    _pills += f'<span style="font-size:10px;color:{_pc};margin-right:6px;">{_short} {_pv}%</span>'
+            except Exception:
+                pass
+            st.markdown(f"""
+<div style="background:{BRAND['bg_card']};border:1px solid {BRAND['border']};border-radius:10px;padding:10px 14px;margin-bottom:8px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+    <div style="color:{BRAND['white']};font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;">{_dom}</div>
+    <div style="color:{_sc_c};font-size:18px;font-weight:800;line-height:1;">{_sc}%</div>
+  </div>
+  <div style="color:{BRAND['text_secondary']};font-size:10px;margin-bottom:4px;">{_ts}</div>
+  <div style="line-height:1.8;">{_pills}</div>
+</div>""", unsafe_allow_html=True)
+
 # Collect and validate URLs
 all_url_inputs = {
     "Homepage": home_url,
@@ -1046,6 +1138,22 @@ if run_audit or "_audit" in st.session_state:
             if _sr.get("nosnippet_elements", 0) > 5:           _ps -= 10
             _sem_scores.append(max(0, _ps))
     semantic_score = round(sum(_sem_scores) / len(_sem_scores)) if _sem_scores else 0
+
+    # ── Save new audit to Supabase (fresh runs only) ──────────────────────
+    if run_audit:
+        save_audit_to_db(
+            domain=parsed.netloc,
+            overall=overall,
+            pillar_scores_dict={
+                "JS Rendering":       js_score,
+                "Robots & Crawl":     robots_score,
+                "Schema & Entity":    schema_score,
+                "AI Discoverability": llm_score,
+                "Semantic Hierarchy": semantic_score,
+                "Security":           security_score,
+            },
+            audited_urls=all_test_urls,
+        )
 
     # ══════════════════════════════════════════════════════════════════════
     # RESULTS
