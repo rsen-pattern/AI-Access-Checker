@@ -1621,7 +1621,10 @@ def _bifrost_call(api_key: str, prompt: str, max_tokens: int = 700) -> str | Non
             "https://bifrost.pattern.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={"model": "openai/gpt-4o-mini", "max_tokens": max_tokens,
-                  "temperature": 0.3, "messages": [{"role": "user", "content": prompt}]},
+                  "temperature": 0.3, "messages": [
+                      {"role": "system", "content": "You write in British English. Use British spelling and vocabulary throughout (e.g. optimise, analyse, catalogue, organisation, colour, prioritise)."},
+                      {"role": "user", "content": prompt},
+                  ]},
             timeout=30,
         )
         if resp.status_code == 200:
@@ -1680,7 +1683,7 @@ Provide exactly:
 3. TOP 3 QUICK WINS THIS WEEK: Actions completable in under 2 hours each. Be specific and practical.
 4. STRATEGIC RECOMMENDATION: One higher-effort initiative for this quarter with expected impact.
 
-Use Australian English. Be direct and specific. No jargon. One concrete action per point. Focus on business impact.""")
+Be direct and specific. No jargon. One concrete action per point. Focus on business impact.""")
 
 
 def analyse_schema_quality(url, schema_data, get_secret) -> str | None:
