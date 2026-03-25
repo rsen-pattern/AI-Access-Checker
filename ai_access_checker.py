@@ -1004,7 +1004,7 @@ with tab_audit:
         prod_url_2 = st.text_input("Product Page 2", placeholder="https://example.com/products/item-2", key="prod2", label_visibility="collapsed")
 
     with st.expander("⚙️  Advanced Options"):
-        run_bot_crawl = st.checkbox("Run live bot crawl test (sends requests as each AI bot)", value=True)
+        run_bot_crawl = st.checkbox("Run live bot crawl test (sends requests as each AI bot)", value=True, key="run_bot_crawl")
         st.markdown("---")
         st.markdown(f'<div style="font-size:13px;font-weight:600;color:{BRAND["white"]};margin-bottom:4px;">Content / Blog Pages</div>', unsafe_allow_html=True)
         no_blog = st.checkbox(
@@ -1016,7 +1016,7 @@ with tab_audit:
         if no_blog:
             st.markdown(f'<div style="font-size:12px;color:{BRAND["warning"]};margin-top:4px;">⚠️ A penalty will be applied to the Schema & Entity score for missing editorial blog content. These pages will be evaluated against About/Contact schema expectations instead.</div>', unsafe_allow_html=True)
 
-    run_audit = st.button("Run Audit", type="primary", use_container_width=True)
+    run_audit = st.button("Run Audit", type="primary", use_container_width=True) or st.session_state.pop("_pending_rerun", False)
 
     # Collect and validate URLs
     all_url_inputs = {
@@ -1135,8 +1135,16 @@ with tab_history:
             st.download_button("Download CSV", _csv_buf.getvalue(), "audit_history.csv", "text/csv",
                                use_container_width=False, key="csv_export")
 
-            # ── Load Report buttons ─────────────────────────────────────────────
-            st.markdown(f'<div style="margin-top:16px;color:{BRAND["text_secondary"]};font-size:12px;margin-bottom:6px;">Load or share a full report:</div>', unsafe_allow_html=True)
+            # ── Load / Rerun Report buttons ──────────────────────────────────────
+            # Maps stored url_labels keys → text_input widget session-state keys
+            _LABEL_TO_KEY = {
+                "Homepage":   "home",
+                "Category 1": "cat1", "Category 2": "cat2",
+                "Blog 1":     "blog1", "Blog 2":     "blog2",
+                "Content 1":  "blog1", "Content 2":  "blog2",  # no_blog aliases
+                "Product 1":  "prod1", "Product 2":  "prod2",
+            }
+            st.markdown(f'<div style="margin-top:16px;color:{BRAND["text_secondary"]};font-size:12px;margin-bottom:6px;">Load, rerun, or share a full report:</div>', unsafe_allow_html=True)
             for _row in _rows:
                 _fr = _row.get("full_results")
                 _dom  = _row.get("domain", "—")
@@ -1145,7 +1153,7 @@ with tab_history:
                 _label = f"{_dom} · {_date} · {_sc}%"
                 _has_full = _fr is not None and isinstance(_fr, dict) and "js_results" in _fr
                 _audit_id = _row.get("id")
-                _btn_col, _share_col, _del_col, _info_col = st.columns([3, 1, 1, 4])
+                _btn_col, _rerun_col, _share_col, _del_col, _info_col = st.columns([3, 1, 1, 1, 3])
                 with _btn_col:
                     if st.button(f"📋 {_label}", key=f"load_{_audit_id or _label}", disabled=not _has_full, use_container_width=True):
                         st.session_state["_audit"] = _fr
@@ -1153,6 +1161,23 @@ with tab_history:
                         if _audit_id:
                             st.query_params["audit"] = str(_audit_id)
                             st.session_state["_loaded_audit_id"] = str(_audit_id)
+                        st.rerun()
+                with _rerun_col:
+                    if _has_full and st.button("🔄", key=f"rerun_{_audit_id}", help="Rerun this audit with fresh checks", use_container_width=True):
+                        # Pre-populate form inputs via widget session-state keys
+                        _inv = {v: k for k, v in (_fr.get("url_labels") or {}).items()}
+                        for _lbl, _widget_key in _LABEL_TO_KEY.items():
+                            if _lbl in _inv:
+                                st.session_state[_widget_key] = _inv[_lbl]
+                        # Restore Advanced Options flags
+                        st.session_state["no_blog"]       = bool(_fr.get("no_blog", False))
+                        st.session_state["run_bot_crawl"] = bool(_fr.get("bot_crawl_results"))
+                        # Clear any previously cached result so a fresh audit runs
+                        st.session_state.pop("_audit", None)
+                        st.session_state.pop("_loaded_audit_id", None)
+                        st.session_state.pop("_loaded_from_history", None)
+                        st.query_params.pop("audit", None)
+                        st.session_state["_pending_rerun"] = True
                         st.rerun()
                 with _share_col:
                     if _audit_id and _has_full:
