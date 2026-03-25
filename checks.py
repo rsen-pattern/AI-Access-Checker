@@ -123,7 +123,34 @@ SENSITIVE_PATHS = {
     ],
 }
 
-# Flat list for robots.txt parsing
+# Paths that only make sense for specific platforms — skip on other CMSes
+CMS_SPECIFIC_PATHS = {
+    # Only relevant for WordPress / WooCommerce
+    "wordpress": {"/wp-admin", "/wp-login.php", "/wp-json", "/xmlrpc.php",
+                  "/wp-content/debug.log", "/trackback"},
+    # PHP admin tools — irrelevant for SaaS platforms (Shopify, BigCommerce)
+    "php":       {"/phpmyadmin", "/adminer"},
+    # Magento REST API
+    "magento":   {"/rest/V1"},
+}
+
+# CMSes that are SaaS / hosted — WordPress and PHP tools can never exist there
+_SAAS_CMS = {"shopify", "bigcommerce"}
+
+def _relevant_paths(paths_dict, cms_id):
+    """Return a filtered copy of paths_dict, dropping CMS-irrelevant paths."""
+    if not cms_id:
+        return paths_dict  # unknown CMS — keep everything (conservative)
+    exclude = set()
+    if cms_id in _SAAS_CMS:
+        exclude |= CMS_SPECIFIC_PATHS["wordpress"]
+        exclude |= CMS_SPECIFIC_PATHS["php"]
+    if cms_id != "magento":
+        exclude |= CMS_SPECIFIC_PATHS["magento"]
+    return {cat: [p for p in paths if p not in exclude]
+            for cat, paths in paths_dict.items()}
+
+# Flat list for robots.txt parsing (full, unfiltered — CMS filtering applied at runtime)
 ALL_SENSITIVE_PATHS = [p for paths in SENSITIVE_PATHS.values() for p in paths]
 
 
@@ -707,13 +734,17 @@ def check_security_exposure(base_url, robots_raw: str = "", homepage_html: str =
     findings = {"critical": [], "backend": [], "customer": [], "dev": [],
                 "html_exposure": [], "robots_allowlist": []}
 
+    # Filter paths to only those relevant for the detected CMS
+    cms_id, _ = detect_cms(homepage_html, base_url) if homepage_html else (None, 0)
+    active_paths = _relevant_paths(SENSITIVE_PATHS, cms_id)
+
     # ── 1–3. Sensitive path probing (parallelized) ──────────────────────────
     _path_tasks = []
-    for path in SENSITIVE_PATHS["critical"]:
+    for path in active_paths["critical"]:
         _path_tasks.append(("critical", path, AI_BOTS["OpenAI"]["ChatGPT-User"]))
-    for path in SENSITIVE_PATHS["backend"]:
+    for path in active_paths["backend"]:
         _path_tasks.append(("backend", path, AI_BOTS["OpenAI"]["ChatGPT-User"]))
-    for path in SENSITIVE_PATHS["customer"]:
+    for path in active_paths["customer"]:
         _path_tasks.append(("customer", path, AI_BOTS["Anthropic"]["Claude-User"]))
 
     def _probe_path(category, path, ua):
@@ -759,7 +790,7 @@ def check_security_exposure(base_url, robots_raw: str = "", homepage_html: str =
             agent_block = re.search(pattern, robots_lower, re.S)
             if agent_block:
                 block_text = agent_block.group(1)
-                for path_cat, paths in SENSITIVE_PATHS.items():
+                for path_cat, paths in active_paths.items():
                     for path in paths:
                         if f"allow: {path.lower()}" in block_text:
                             ai_agent_blocks.append({
@@ -866,6 +897,11 @@ def check_robots_crawlability(base_url, homepage_html):
     raw_data = {"robots": {}, "bot_crawl": {}, "cms": {}, "performance": {},
                 "cloudflare": {}}
 
+    # Detect CMS early so path filtering is applied consistently throughout
+    _cms_id, _ = detect_cms(homepage_html, base_url)
+    _active_paths = _relevant_paths(SENSITIVE_PATHS, _cms_id)
+    _active_all_paths = [p for paths in _active_paths.values() for p in paths]
+
     # ── robots.txt ────────────────────────────────────────────────────────────
     robots_url = urljoin(base_url, "/robots.txt")
     resp, err = fetch(robots_url)
@@ -895,7 +931,7 @@ def check_robots_crawlability(base_url, homepage_html):
                 ai_results[bot_name] = {"company": company, "allowed": allowed,
                                         "bot_type": BOT_TYPES.get(bot_name, "unknown")}
 
-        for path in ALL_SENSITIVE_PATHS:
+        for path in _active_all_paths:
             blocked = False
             if parser:
                 try: blocked = not parser.can_fetch(BROWSER_UA, base_url + path)
