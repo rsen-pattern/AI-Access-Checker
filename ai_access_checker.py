@@ -2551,7 +2551,7 @@ if run_audit or "_audit" in st.session_state:
             with st.expander(f"Robots.txt coverage — {len(no_disallow)} paths have no Disallow rule"):
                 st.caption("These paths are not necessarily accessible — this is about robots.txt hygiene, not HTTP exposure.")
                 for p in no_disallow:
-                    st.markdown(brand_status(f"No Disallow rule: {p}", "info"), unsafe_allow_html=True)
+                    st.markdown(brand_status(f"No Disallow rule: {p}", "danger"), unsafe_allow_html=True)
 
         # Score breakdown
         sec_items = security_result.get("items", [])
