@@ -2426,11 +2426,9 @@ if run_audit or "_audit" in st.session_state:
         if bot_crawl_results:
             allowed_count = sum(1 for r in bot_crawl_results.values() if r["is_allowed"])
             total_bots = len(bot_crawl_results)
-            bot_crawl_score = round(allowed_count / total_bots * 100) if total_bots > 0 else 0
             st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
-            st.markdown(pillar_header(5, "Live Bot Crawl", bot_crawl_score), unsafe_allow_html=True)
+            st.markdown(f'<div style="font-size:20px;font-weight:700;color:{BRAND["white"]};margin-bottom:4px;">Live Bot Crawl Results</div>', unsafe_allow_html=True)
             st.markdown(f'{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">Tested against homepage</span>', unsafe_allow_html=True)
-            st.markdown(brand_score_bar(bot_crawl_score), unsafe_allow_html=True)
             pillar_explainer("bot_crawl")
             st.markdown(f'<div style="font-size:14px;color:{BRAND["text_secondary"]};margin-bottom:12px;"><span style="color:{BRAND["teal"]};font-weight:700;">{allowed_count}</span> allowed · <span style="color:{BRAND["danger"]};font-weight:700;">{total_bots - allowed_count}</span> blocked · {total_bots} total</div>', unsafe_allow_html=True)
             for company in list(dict.fromkeys(r["company"] for r in bot_crawl_results.values())):
@@ -2448,7 +2446,7 @@ if run_audit or "_audit" in st.session_state:
         # SEMANTIC HIERARCHY & OTHER CHECKS (replaces Supplementary)
         # ══════════════════════════════════════════════════════════════════════
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
-        st.markdown(pillar_header(6, "Semantic Hierarchy & Content Structure", semantic_score), unsafe_allow_html=True)
+        st.markdown(pillar_header(5, "Semantic Hierarchy & Content Structure", semantic_score), unsafe_allow_html=True)
         st.markdown(f'{brand_pill("PAGE-LEVEL", BRAND["primary"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">Heading structure, semantic HTML, meta directives — checked per page</span>', unsafe_allow_html=True)
         st.markdown(brand_score_bar(semantic_score), unsafe_allow_html=True)
         pillar_explainer("semantic_content")
@@ -2518,7 +2516,7 @@ if run_audit or "_audit" in st.session_state:
         # SECURITY DRILLDOWN
         # ══════════════════════════════════════════════════════════════════════
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
-        st.markdown(pillar_header(7, "Security & Exposure", security_score), unsafe_allow_html=True)
+        st.markdown(pillar_header(6, "Security & Exposure", security_score), unsafe_allow_html=True)
         st.markdown(f'{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">Sensitive path probing — checked once against your live site</span>', unsafe_allow_html=True)
         st.markdown(brand_score_bar(security_score), unsafe_allow_html=True)
         sec_findings = security_result.get("findings", {})
