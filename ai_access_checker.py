@@ -222,10 +222,10 @@ def _sanitise_for_db(obj, _depth=0):
 
 
 def save_audit_to_db(domain, overall, pillar_scores_dict, audited_urls, full_results=None):
-    """Persist full audit results to Supabase. Silently no-ops if DB not configured."""
+    """Persist full audit results to Supabase. Returns (id, error_str)."""
     sb = get_supabase()
     if not sb:
-        return
+        return None, None  # Not configured — caller handles messaging
     try:
         row = {
             "domain":        domain,
@@ -237,10 +237,10 @@ def save_audit_to_db(domain, overall, pillar_scores_dict, audited_urls, full_res
             row["full_results"] = _sanitise_for_db(full_results)
         result = sb.table("audits").insert(row).execute()
         if result.data:
-            return result.data[0].get("id")
-    except Exception:
-        pass  # Never crash the app due to a DB write failure
-    return None
+            return result.data[0].get("id"), None
+    except Exception as e:
+        return None, str(e)  # Surface the error — never crash the app
+    return None, "Insert returned no data"
 
 
 def load_audit_history(domain=None, limit=10):
@@ -299,6 +299,17 @@ def normalise_url(url: str) -> str:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     return url
+
+
+def _page_type_from_label(label: str) -> str:
+    """Map a URL label ('Blog 1', 'Content 1', 'Product 2', …) to a page_type key."""
+    l = label.lower()
+    if "homepage" in l:  return "homepage"
+    if "blog" in l:      return "blog"
+    if "content" in l or "about" in l or "contact" in l or "story" in l: return "content"
+    if "category" in l or "collection" in l: return "category"
+    if "product" in l:   return "product"
+    return "general"
 
 
 def fetch(url: str, timeout: int = 15, user_agent: str = None):
@@ -994,6 +1005,16 @@ with tab_audit:
 
     with st.expander("⚙️  Advanced Options"):
         run_bot_crawl = st.checkbox("Run live bot crawl test (sends requests as each AI bot)", value=True)
+        st.markdown("---")
+        st.markdown(f'<div style="font-size:13px;font-weight:600;color:{BRAND["white"]};margin-bottom:4px;">Content / Blog Pages</div>', unsafe_allow_html=True)
+        no_blog = st.checkbox(
+            "This site has no blog — using About / Contact / Story pages instead",
+            value=False,
+            key="no_blog",
+            help="When checked, blog field URLs are treated as general content pages. A scoring penalty applies for the absence of editorial content.",
+        )
+        if no_blog:
+            st.markdown(f'<div style="font-size:12px;color:{BRAND["warning"]};margin-top:4px;">⚠️ A penalty will be applied to the Schema & Entity score for missing editorial blog content. These pages will be evaluated against About/Contact schema expectations instead.</div>', unsafe_allow_html=True)
 
     run_audit = st.button("Run Audit", type="primary", use_container_width=True)
 
@@ -1250,11 +1271,16 @@ if run_audit or "_audit" in st.session_state:
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-        # URL labels for display
+        # URL labels and page types for display and scoring
         url_labels = {}
+        url_page_types = {}
         for name, u in all_url_inputs.items():
             if u and u.strip():
-                url_labels[normalise_url(u.strip())] = name
+                # Remap blog labels when no_blog is flagged
+                display_name = name.replace("Blog", "Content") if (no_blog and "Blog" in name) else name
+                norm = normalise_url(u.strip())
+                url_labels[norm] = display_name
+                url_page_types[norm] = _page_type_from_label(display_name)
 
         # ── ESTIMATED TIME BREAKDOWN ──────────────────────────────────────────
         n_pages = len(all_test_urls)
@@ -1312,7 +1338,7 @@ if run_audit or "_audit" in st.session_state:
         progress.progress(3, text=f"[1/6] JS Rendering — checking {n_pages} pages… (est. {js_label.split('(')[0].strip()})")
         js_results = {}
         with ThreadPoolExecutor(max_workers=3) as _pool:
-            _futs = {_pool.submit(check_js_rendering, u, get_secret): u for u in all_test_urls}
+            _futs = {_pool.submit(check_js_rendering, u, get_secret, url_page_types.get(u, "general")): u for u in all_test_urls}
             for _done_count, _f in enumerate(as_completed(_futs), 1):
                 _u = _futs[_f]
                 try:
@@ -1336,7 +1362,7 @@ if run_audit or "_audit" in st.session_state:
         # ── PILLAR 3: SCHEMA & ENTITY (all pages — parallelized) ─────────────
         schema_results = {}
         with ThreadPoolExecutor(max_workers=3) as _pool:
-            _futs = {_pool.submit(check_schema_meta, u): u for u in all_test_urls}
+            _futs = {_pool.submit(check_schema_meta, u, url_page_types.get(u, "general")): u for u in all_test_urls}
             for _done_count, _f in enumerate(as_completed(_futs), 1):
                 _u = _futs[_f]
                 try:
@@ -1347,6 +1373,9 @@ if run_audit or "_audit" in st.session_state:
                 progress.progress(38 + round(14 * (_done_count / n_pages)),
                     text=f"[3/6] Schema & Entity — {_done_count}/{n_pages} done · {elapsed}s elapsed")
         schema_score = round(sum(r.get("score", 0) for r in schema_results.values()) / len(schema_results))
+        # No-blog penalty: deduct 10pts from schema score when editorial content is absent
+        if no_blog:
+            schema_score = max(0, schema_score - 10)
 
         # ── PILLAR 4: AI DISCOVERABILITY (site-level) ──────────────────────────
         elapsed = round(time.time() - audit_start)
@@ -1418,6 +1447,7 @@ if run_audit or "_audit" in st.session_state:
             "overall":       overall,
             "overall_grade": overall_grade,
             "overall_result": overall_result,
+            "no_blog":       no_blog,
         }
 
     # ── Unpack results (fresh audit or cached) ────────────────────────────
@@ -1439,6 +1469,7 @@ if run_audit or "_audit" in st.session_state:
     overall         = _a.get("overall", 0)
     overall_grade   = _a.get("overall_grade", "?")
     overall_result  = _a.get("overall_result", {"score": overall, "grade": overall_grade})
+    no_blog         = _a.get("no_blog", False)
     url             = all_test_urls[0]
     parsed          = urlparse(url)
     base_url        = f"{parsed.scheme}://{parsed.netloc}"
@@ -1462,7 +1493,7 @@ if run_audit or "_audit" in st.session_state:
 
     # ── Save new audit to Supabase (fresh runs only) ──────────────────────
     if run_audit:
-        _saved_id = save_audit_to_db(
+        _saved_id, _save_err = save_audit_to_db(
             domain=parsed.netloc,
             overall=overall,
             pillar_scores_dict={
@@ -1493,6 +1524,7 @@ if run_audit or "_audit" in st.session_state:
                 "overall":           overall,
                 "overall_grade":     overall_grade,
                 "overall_result":    overall_result,
+                "no_blog":           no_blog,
             },
         )
         if _saved_id:
@@ -1500,6 +1532,8 @@ if run_audit or "_audit" in st.session_state:
             st.session_state["_loaded_audit_id"] = str(_saved_id)
         elif get_supabase() is None:
             st.info("Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets to save audits and generate shareable links.")
+        elif _save_err:
+            st.warning(f"Audit completed but could not be saved to history — DB error: {_save_err}")
 
     with tab_audit:
         # ══════════════════════════════════════════════════════════════════════
@@ -1507,6 +1541,63 @@ if run_audit or "_audit" in st.session_state:
         # ══════════════════════════════════════════════════════════════════════
 
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
+
+        # ── ANTI-BOT PROTECTION CALLOUT ───────────────────────────────────────
+        _antibot_urls = [
+            u for u in all_test_urls
+            if js_results.get(u, {}).get("error") and any(
+                x in str(js_results[u].get("error", "")).lower()
+                for x in ("403", "blocked", "cloudflare", "challenge", "forbidden")
+            )
+        ]
+        _antibot_schema = [
+            u for u in all_test_urls
+            if schema_results.get(u, {}).get("error") and any(
+                x in str(schema_results[u].get("error", "")).lower()
+                for x in ("403", "blocked", "cloudflare", "challenge", "forbidden")
+            )
+        ]
+        _cf_detected = robots_result.get("cloudflare", {}).get("cloudflare_detected", False)
+        _cf_blocking = robots_result.get("cloudflare", {}).get("bot_fight_mode_likely", False)
+        _bots_blocked = robots_result.get("cloudflare", {}).get("blocked_bots", [])
+        _all_bots_blocked = bot_crawl_results and all(not r.get("is_allowed") for r in bot_crawl_results.values())
+
+        if _cf_blocking or _antibot_urls or _antibot_schema or _all_bots_blocked:
+            _blocked_pages = list(dict.fromkeys([url_labels.get(u, u) for u in _antibot_urls + _antibot_schema]))
+            _bot_list = ", ".join(_bots_blocked) if _bots_blocked else ("All tested bots" if _all_bots_blocked else "")
+            _detail_parts = []
+            if _cf_blocking:
+                _detail_parts.append(f"Cloudflare Bot Fight Mode is actively blocking AI crawlers ({_bot_list})")
+            if _blocked_pages:
+                _detail_parts.append(f"Crawl failed on: {', '.join(_blocked_pages)}")
+            if _all_bots_blocked and not _cf_blocking:
+                _detail_parts.append("All AI bots were blocked in the live crawl test")
+            _detail_html = " · ".join(_detail_parts)
+            st.markdown(
+                f'<div style="background:#ff4b4b18;border:1px solid #ff4b4b55;border-left:4px solid #ff4b4b;border-radius:0 10px 10px 0;padding:16px 20px;margin:12px 0;">'
+                f'<div style="font-size:14px;font-weight:700;color:#ff4b4b;margin-bottom:6px;">🛡️ Anti-Bot Protection Detected — Results May Be Incomplete</div>'
+                f'<div style="font-size:13px;color:{BRAND["white"]};line-height:1.6;">{_detail_html}</div>'
+                f'<div style="font-size:12px;color:{BRAND["text_secondary"]};margin-top:8px;">Scores for affected pages are based on what our crawlers could access. Manual verification is recommended. Security section will still show exposure data collected before the block.</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        elif _cf_detected:
+            st.markdown(
+                f'<div style="background:{BRAND["warning"]}18;border:1px solid {BRAND["warning"]}55;border-left:4px solid {BRAND["warning"]};border-radius:0 10px 10px 0;padding:12px 18px;margin:12px 0;">'
+                f'<div style="font-size:13px;font-weight:600;color:{BRAND["warning"]};">⚠️ Cloudflare detected on this site — monitor bot access settings to ensure AI crawlers are not blocked</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        # ── NO-BLOG NOTICE ─────────────────────────────────────────────────────
+        if no_blog:
+            st.markdown(
+                f'<div style="background:{BRAND["warning"]}15;border:1px solid {BRAND["warning"]}44;border-left:4px solid {BRAND["warning"]};border-radius:0 10px 10px 0;padding:12px 18px;margin:12px 0;">'
+                f'<div style="font-size:13px;font-weight:600;color:{BRAND["warning"]};">📝 No editorial blog — 10pt schema penalty applied</div>'
+                f'<div style="font-size:12px;color:{BRAND["text_secondary"]};margin-top:4px;">Content pages (About/Contact/Story) evaluated against appropriate schema expectations. Editorial content significantly improves AI discoverability and citation potential.</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
         # ── GAUGE + SCORE CARDS ───────────────────────────────────────────────
         col_gauge, col_pillars = st.columns([1, 2])
@@ -2116,6 +2207,10 @@ if run_audit or "_audit" in st.session_state:
                                     and any(x in p for x in ["/admin", "/api", "/.env", "/config", "/database"])]
                 if critical_exposed:
                     recs.append(("warning", "Robots.txt", f"Sensitive paths have no Disallow rule in robots.txt: {', '.join(critical_exposed[:4])}. These paths aren't necessarily accessible — but adding explicit Disallow rules is best practice to prevent accidental AI bot indexing."))
+
+        # ── No editorial blog ─────────────────────────────────────────────────────
+        if no_blog:
+            recs.append(("warning", "Editorial Content", "No blog or editorial content pages were audited. AI systems like Perplexity, ChatGPT, and Claude preferentially cite and surface brands with regular editorial content. Consider creating a blog, resource hub, or thought-leadership section — even 4–6 quality posts significantly improves AI citation potential."))
 
         # ── Schema ────────────────────────────────────────────────────────────────
         if schema_score < 30:

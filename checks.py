@@ -592,7 +592,7 @@ def compare_html_vs_js(html_str, js_str, page_type="homepage"):
     }
 
 
-def check_js_rendering(url, get_secret):
+def check_js_rendering(url, get_secret, page_type="general"):
     """
     Pillar 1 full check. Returns ScoreBuilder.to_dict() plus raw data.
     Hard cap: 40 if gap_severity > 0.5
@@ -609,7 +609,7 @@ def check_js_rendering(url, get_secret):
     js_html, js_provider, js_error = fetch_js_rendered(url, get_secret)
     comparison = None
     if js_html:
-        comparison = compare_html_vs_js(raw_html, js_html)
+        comparison = compare_html_vs_js(raw_html, js_html, page_type=page_type)
         comparison["provider"] = js_provider
 
     sb = ScoreBuilder("JS Rendering", max_score=100)
@@ -1158,7 +1158,17 @@ def validate_schema_fields(schema_type, data):
             "completeness": round(len(present) / len(expected) * 100) if expected else 100}
 
 
-def check_schema_meta(url):
+_ESSENTIAL_BY_PAGE_TYPE = {
+    "homepage": {"Organization", "WebSite", "WebPage", "BreadcrumbList"},
+    "blog":     {"Article",  "BreadcrumbList", "WebPage"},
+    "category": {"ItemList", "BreadcrumbList", "WebPage"},
+    "product":  {"Product",  "Offer", "BreadcrumbList", "WebPage"},
+    "content":  {"Organization", "WebPage", "BreadcrumbList"},  # About/Contact/Story
+    "general":  {"WebPage",  "BreadcrumbList"},
+}
+
+
+def check_schema_meta(url, page_type="general"):
     """Pillar 3: schema, meta, entity, ecommerce fields, authority signals."""
     resp, err = fetch(url)
     if err or not resp or resp.status_code != 200:
@@ -1211,16 +1221,17 @@ def check_schema_meta(url):
         sb.add(0, "No schema found — AI has to guess what your pages are about", "schema_presence")
         sb.cap(20, "Zero schema markup detected across all pages — AI cannot reliably understand your content")
 
-    # Essential schema types
-    essential = {"Organization", "WebSite", "WebPage", "BreadcrumbList"}
+    # Essential schema types — requirements vary by page type
+    essential = _ESSENTIAL_BY_PAGE_TYPE.get(page_type, _ESSENTIAL_BY_PAGE_TYPE["general"])
     found_essential = essential & type_set
     missing_essential = essential - type_set
-    if len(found_essential) >= 3:
-        sb.add(15, f"Essential schema types present: {', '.join(sorted(found_essential))}", "essential_types")
+    _page_type_label = page_type.replace("content", "About/Contact").replace("blog", "editorial").capitalize()
+    if len(found_essential) >= len(essential) - 1:
+        sb.add(15, f"Essential schema types present ({_page_type_label} page): {', '.join(sorted(found_essential))}", "essential_types")
     elif found_essential:
-        sb.add(8, f"Some essential schema present: {', '.join(sorted(found_essential))} — missing: {', '.join(sorted(missing_essential))}", "essential_types")
+        sb.add(8, f"Some essential schema present ({_page_type_label} page): {', '.join(sorted(found_essential))} — missing: {', '.join(sorted(missing_essential))}", "essential_types")
     else:
-        sb.add(0, f"No essential schema types — missing all of: {', '.join(sorted(missing_essential))}", "essential_types")
+        sb.add(0, f"No essential schema types ({_page_type_label} page) — missing all of: {', '.join(sorted(missing_essential))}", "essential_types")
 
     # Field completeness
     if validations:
