@@ -1165,6 +1165,10 @@ def check_schema_meta(url):
         return {"error": err or f"HTTP {resp.status_code if resp else '?'}",
                 "score": 0, "grade": get_grade(0), "items": []}
 
+    # Track whether the request was redirected (e.g. homepage → different page)
+    final_url = resp.url if resp.url else url
+    was_redirected = bool(resp.history) and final_url.rstrip("/") != url.rstrip("/")
+
     soup = BeautifulSoup(resp.text, "html.parser")
     sb = ScoreBuilder("Schema & Entity", max_score=100)
 
@@ -1368,8 +1372,11 @@ def check_schema_meta(url):
             "has_review_schema": has_review, "count": len(schemas),
         },
         "meta": {"title": title_text, "title_len": len(title_text), "desc": desc_text,
-                 "desc_len": len(desc_text), "canonical": canon_href, "og_tags": og,
-                 "twitter_tags": tw, "hreflangs": len(soup.find_all("link", rel="alternate", hreflang=True)),
+                 "desc_len": len(desc_text), "canonical": canon_href,
+                 "canonical_matches_url": bool(canon_href) and canon_href.rstrip("/") == url.rstrip("/"),
+                 "final_url": final_url, "was_redirected": was_redirected,
+                 "og_tags": og, "twitter_tags": tw,
+                 "hreflangs": len(soup.find_all("link", rel="alternate", hreflang=True)),
                  "robots_meta": robots_content, "has_noindex": "noindex" in robots_content.lower()},
         "entity": {"has_author": bool(author_schema or author_el), "has_author_schema": author_schema,
                    "has_date_published": date_schema, "has_date_modified": date_modified,

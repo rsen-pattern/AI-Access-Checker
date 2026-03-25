@@ -610,7 +610,14 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
             schema_sec += _status(f"Title ({len(title)} chars): {title[:80]}", "success" if title else "danger")
             schema_sec += _status(f"Meta description: {desc_len} chars", "success" if 100 <= desc_len <= 160 else "warning")
             canon = meta_data.get("canonical", "")
-            schema_sec += _status(f"Canonical: {canon[:80] or 'Missing'}", "success" if canon else "warning")
+            if not canon:
+                schema_sec += _status("Canonical: Missing", "warning")
+            elif meta_data.get("canonical_matches_url"):
+                schema_sec += _status(f"Canonical: Matching — {canon[:80]}", "success")
+            else:
+                schema_sec += _status(f"Canonical: Not matching — {canon[:80]}", "danger")
+            if meta_data.get("was_redirected"):
+                schema_sec += _status(f"Redirect detected — fetched: {meta_data.get('final_url','')[:80]}", "warning")
         if not schemas:
             schema_sec += _status("No Schema.org structured data found", "warning")
 
@@ -1805,7 +1812,14 @@ if run_audit or "_audit" in st.session_state:
                     desc_len = meta_data.get("desc_len", len(desc))
                     st.markdown(brand_status(f"Description ({desc_len} chars)", "success" if 100 <= desc_len <= 160 else "warning" if desc else "danger"), unsafe_allow_html=True)
                     canon = meta_data.get("canonical", "")
-                    st.markdown(brand_status(f"Canonical: {canon[:80] or 'Missing'}", "success" if canon else "warning"), unsafe_allow_html=True)
+                    if not canon:
+                        st.markdown(brand_status("Canonical: Missing", "warning"), unsafe_allow_html=True)
+                    elif meta_data.get("canonical_matches_url"):
+                        st.markdown(brand_status(f"Canonical: Matching — {canon[:80]}", "success"), unsafe_allow_html=True)
+                    else:
+                        st.markdown(brand_status(f"Canonical: Not matching — {canon[:80]}", "danger"), unsafe_allow_html=True)
+                    if meta_data.get("was_redirected"):
+                        st.markdown(brand_status(f"Redirect detected — fetched URL: {meta_data.get('final_url', '')[:80]}", "warning"), unsafe_allow_html=True)
                     og = meta_data.get("og_tags", {})
                     st.markdown(brand_status(f"OG tags: {len(og)}", "success" if len(og) >= 3 else "warning"), unsafe_allow_html=True)
 
