@@ -1373,15 +1373,15 @@ if run_audit or "_audit" in st.session_state:
                 progress.progress(38 + round(14 * (_done_count / n_pages)),
                     text=f"[3/6] Schema & Entity — {_done_count}/{n_pages} done · {elapsed}s elapsed")
         schema_score = round(sum(r.get("score", 0) for r in schema_results.values()) / len(schema_results))
-        # No-blog penalty: deduct 10pts from schema score when editorial content is absent
-        if no_blog:
-            schema_score = max(0, schema_score - 10)
 
         # ── PILLAR 4: AI DISCOVERABILITY (site-level) ──────────────────────────
         elapsed = round(time.time() - audit_start)
         progress.progress(55, text=f"[4/7] AI Discoverability — llm.txt, AI info page, well-known files… · {elapsed}s elapsed")
         llm_result = check_llm_discoverability(base_url, homepage_html)
         llm_score = llm_result.get("score", 0)
+        # No-blog penalty: AI cannot learn about the brand without editorial content
+        if no_blog:
+            llm_score = max(0, llm_score - 10)
 
         # ── SEMANTIC HIERARCHY (all pages) ────────────────────────────────────
         elapsed = round(time.time() - audit_start)
