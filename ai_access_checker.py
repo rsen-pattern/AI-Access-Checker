@@ -1922,26 +1922,80 @@ if run_audit or "_audit" in st.session_state:
                 # More items left — continue immediately
                 st.rerun()
         else:
-            # Normal single audit — INSERT new row
-            _saved_id, _save_err = save_audit_to_db(
-                domain=parsed.netloc,
-                overall=overall,
-                pillar_scores_dict=_pillar_scores_payload,
-                audited_urls=all_test_urls,
-                full_results=_full_results_payload,
-            )
-            if _saved_id:
-                st.query_params["audit"] = str(_saved_id)
-                st.session_state["_loaded_audit_id"] = str(_saved_id)
-            elif get_supabase() is None:
-                st.info("Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets to save audits and generate shareable links.")
-            elif _save_err:
-                st.warning(f"Audit completed but could not be saved to history — DB error: {_save_err}")
+            # Normal single audit — check for existing record and ask user what to do
+            _existing = load_audit_history(domain=parsed.netloc, limit=1)
+            if _existing and get_supabase() is not None:
+                # Store pending data; confirmation prompt rendered in tab_audit below
+                st.session_state["_pending_overwrite"] = {
+                    "existing_id":   _existing[0]["id"],
+                    "existing_date": _existing[0].get("audited_at", "")[:10],
+                    "domain":        parsed.netloc,
+                    "overall":       overall,
+                    "pillar_scores": _pillar_scores_payload,
+                    "urls":          all_test_urls,
+                    "full_results":  _full_results_payload,
+                }
+            else:
+                _saved_id, _save_err = save_audit_to_db(
+                    domain=parsed.netloc,
+                    overall=overall,
+                    pillar_scores_dict=_pillar_scores_payload,
+                    audited_urls=all_test_urls,
+                    full_results=_full_results_payload,
+                )
+                if _saved_id:
+                    st.query_params["audit"] = str(_saved_id)
+                    st.session_state["_loaded_audit_id"] = str(_saved_id)
+                elif get_supabase() is None:
+                    st.info("Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets to save audits and generate shareable links.")
+                elif _save_err:
+                    st.warning(f"Audit completed but could not be saved to history — DB error: {_save_err}")
 
     with tab_audit:
         # ══════════════════════════════════════════════════════════════════════
         # RESULTS
         # ══════════════════════════════════════════════════════════════════════
+
+        # ── Overwrite confirmation prompt ─────────────────────────────────────
+        if "_pending_overwrite" in st.session_state:
+            _pov = st.session_state["_pending_overwrite"]
+            st.warning(
+                f"A previous audit for **{_pov['domain']}** already exists "
+                f"(from {_pov['existing_date']}). How would you like to save this run?"
+            )
+            _ov_col1, _ov_col2 = st.columns(2)
+            with _ov_col1:
+                if st.button("Overwrite existing", type="primary", key="_btn_overwrite"):
+                    _ov_id, _ov_err = update_audit_in_db(
+                        audit_id=_pov["existing_id"],
+                        overall=_pov["overall"],
+                        pillar_scores_dict=_pov["pillar_scores"],
+                        audited_urls=_pov["urls"],
+                        full_results=_pov["full_results"],
+                    )
+                    st.session_state.pop("_pending_overwrite", None)
+                    if _ov_id:
+                        st.query_params["audit"] = str(_ov_id)
+                        st.session_state["_loaded_audit_id"] = str(_ov_id)
+                    elif _ov_err:
+                        st.warning(f"Could not save — DB error: {_ov_err}")
+                    st.rerun()
+            with _ov_col2:
+                if st.button("Save as new entry", key="_btn_save_new"):
+                    _ov_id, _ov_err = save_audit_to_db(
+                        domain=_pov["domain"],
+                        overall=_pov["overall"],
+                        pillar_scores_dict=_pov["pillar_scores"],
+                        audited_urls=_pov["urls"],
+                        full_results=_pov["full_results"],
+                    )
+                    st.session_state.pop("_pending_overwrite", None)
+                    if _ov_id:
+                        st.query_params["audit"] = str(_ov_id)
+                        st.session_state["_loaded_audit_id"] = str(_ov_id)
+                    elif _ov_err:
+                        st.warning(f"Could not save — DB error: {_ov_err}")
+                    st.rerun()
 
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
 
@@ -2317,10 +2371,10 @@ if run_audit or "_audit" in st.session_state:
                     og = meta_data.get("og_tags", {})
                     st.markdown(brand_status(f"OG tags: {len(og)}", "success" if len(og) >= 3 else "warning"), unsafe_allow_html=True)
 
-                # Entity
-                if entity_data:
+                # Entity — author/date only meaningful on editorial/article pages
+                if entity_data and entity_data.get("is_article_page"):
                     st.markdown(brand_status(f"Author: {'Found' if entity_data.get('has_author') else 'Missing'}", "success" if entity_data.get("has_author") else "warning"), unsafe_allow_html=True)
-                    st.markdown(brand_status(f"Publication date: {'Found' if entity_data.get('has_date') else 'Missing'}", "success" if entity_data.get("has_date") else "warning"), unsafe_allow_html=True)
+                    st.markdown(brand_status(f"Publication date: {'Found' if entity_data.get('has_date_published') else 'Missing'}", "success" if entity_data.get("has_date_published") else "warning"), unsafe_allow_html=True)
 
                 # ScoreBuilder rubric items
                 items = sr.get("items", [])
