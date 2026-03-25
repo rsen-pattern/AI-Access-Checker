@@ -938,6 +938,226 @@ def generate_report_text(domain, overall, pillar_scores, url_labels, js_results,
     return "\n".join(lines)
 
 
+def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
+                         llm_result, robots_result, schema_results, semantic_results,
+                         bot_crawl_results, recs):
+    """Generate a formatted PDF audit report using ReportLab. Returns bytes."""
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.colors import HexColor, white, black
+    from reportlab.lib.units import mm
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    import io as _io
+
+    _C_BG      = HexColor("#0A0A0F")
+    _C_CARD    = HexColor("#13131A")
+    _C_BORDER  = HexColor("#2A2A3A")
+    _C_WHITE   = HexColor("#FFFFFF")
+    _C_MUTED   = HexColor("#8B8BA0")
+    _C_PRIMARY = HexColor("#6C63FF")
+    _C_TEAL    = HexColor("#00E5CC")
+    _C_WARN    = HexColor("#FFB547")
+    _C_DANGER  = HexColor("#FF4757")
+    _C_SUCCESS = HexColor("#2ECC71")
+
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=18*mm, rightMargin=18*mm,
+        topMargin=18*mm, bottomMargin=18*mm,
+    )
+
+    styles = getSampleStyleSheet()
+    def _style(name, **kw):
+        base = styles["Normal"]
+        return ParagraphStyle(name, parent=base, **kw)
+
+    S_H1    = _style("H1",    fontSize=20, textColor=_C_WHITE,   spaceAfter=4,  fontName="Helvetica-Bold",  alignment=TA_CENTER)
+    S_H2    = _style("H2",    fontSize=14, textColor=_C_WHITE,   spaceAfter=2,  fontName="Helvetica-Bold")
+    S_H3    = _style("H3",    fontSize=11, textColor=_C_PRIMARY, spaceAfter=2,  fontName="Helvetica-Bold")
+    S_BODY  = _style("BODY",  fontSize=9,  textColor=_C_WHITE,   spaceAfter=2,  fontName="Helvetica",       leading=13)
+    S_MUTED = _style("MUTED", fontSize=8,  textColor=_C_MUTED,   spaceAfter=2,  fontName="Helvetica")
+    S_CRIT  = _style("CRIT",  fontSize=9,  textColor=_C_DANGER,  spaceAfter=2,  fontName="Helvetica-Bold")
+    S_WARN  = _style("WARN",  fontSize=9,  textColor=_C_WARN,    spaceAfter=2,  fontName="Helvetica-Bold")
+    S_OK    = _style("OK",    fontSize=9,  textColor=_C_SUCCESS, spaceAfter=2,  fontName="Helvetica-Bold")
+
+    def _score_color(sc):
+        if sc >= 80: return _C_SUCCESS
+        if sc >= 55: return _C_WARN
+        return _C_DANGER
+
+    def _hr():
+        return HRFlowable(width="100%", thickness=1, color=_C_BORDER, spaceAfter=6, spaceBefore=6)
+
+    def _sp(h=4):
+        return Spacer(1, h)
+
+    story = []
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    story.append(Paragraph("PATTERN — LLM Access Checker", S_H1))
+    story.append(Paragraph(f"Full LLM Access Audit: {domain}", _style("sub", fontSize=11, textColor=_C_MUTED, alignment=TA_CENTER)))
+    story.append(Paragraph(f"Generated: {time.strftime('%Y-%m-%d %H:%M UTC')}", _style("date", fontSize=8, textColor=_C_MUTED, alignment=TA_CENTER)))
+    story.append(_sp(8))
+    story.append(_hr())
+
+    # ── Overall score ─────────────────────────────────────────────────────────
+    story.append(_sp(4))
+    story.append(Paragraph(f"Overall LLM Readiness Score: {overall}%", _style("ov", fontSize=18, textColor=_score_color(overall), fontName="Helvetica-Bold", alignment=TA_CENTER)))
+    story.append(_sp(8))
+
+    # Pillar score table
+    _pillar_data = [["Pillar", "Score", "Grade"]]
+    for pname, psc in pillar_scores.items():
+        if psc >= 80:   grade, color = "Good",  _C_SUCCESS
+        elif psc >= 55: grade, color = "Fair",  _C_WARN
+        else:           grade, color = "Poor",  _C_DANGER
+        _pillar_data.append([
+            Paragraph(pname, _style("pt", fontSize=9, textColor=_C_WHITE, fontName="Helvetica")),
+            Paragraph(f"{psc}%", _style("ps", fontSize=9, textColor=color, fontName="Helvetica-Bold")),
+            Paragraph(grade,     _style("pg", fontSize=9, textColor=color, fontName="Helvetica")),
+        ])
+    _pt = Table(_pillar_data, colWidths=["60%", "20%", "20%"])
+    _pt.setStyle(TableStyle([
+        ("BACKGROUND",  (0, 0), (-1, 0),  _C_PRIMARY),
+        ("TEXTCOLOR",   (0, 0), (-1, 0),  white),
+        ("FONTNAME",    (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTSIZE",    (0, 0), (-1, 0),  9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_C_BG, _C_CARD]),
+        ("GRID",        (0, 0), (-1, -1), 0.5, _C_BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING",  (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING",(0,0), (-1, -1), 5),
+    ]))
+    story.append(_pt)
+    story.append(_sp(8))
+    story.append(_hr())
+
+    # ── Per-page summary table ────────────────────────────────────────────────
+    story.append(Paragraph("Per-Page Results", S_H2))
+    story.append(_sp(4))
+    _pp_data = [["Page", "URL", "JS", "Schema"]]
+    for url_key, label in url_labels.items():
+        _js_s  = js_results.get(url_key, {}).get("score", "—")
+        _sc_s  = schema_results.get(url_key, {}).get("score", "—")
+        _pp_data.append([
+            Paragraph(label,   _style("pl", fontSize=8, textColor=_C_WHITE,   fontName="Helvetica")),
+            Paragraph(url_key, _style("pu", fontSize=7, textColor=_C_MUTED,   fontName="Helvetica")),
+            Paragraph(str(_js_s), _style("pj", fontSize=8, textColor=_score_color(_js_s) if isinstance(_js_s, int) else _C_MUTED, fontName="Helvetica-Bold")),
+            Paragraph(str(_sc_s), _style("pk", fontSize=8, textColor=_score_color(_sc_s) if isinstance(_sc_s, int) else _C_MUTED, fontName="Helvetica-Bold")),
+        ])
+    _ppt = Table(_pp_data, colWidths=["18%", "52%", "15%", "15%"])
+    _ppt.setStyle(TableStyle([
+        ("BACKGROUND",  (0, 0), (-1, 0),  _C_PRIMARY),
+        ("TEXTCOLOR",   (0, 0), (-1, 0),  white),
+        ("FONTNAME",    (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTSIZE",    (0, 0), (-1, 0),  8),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_C_BG, _C_CARD]),
+        ("GRID",        (0, 0), (-1, -1), 0.5, _C_BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING",  (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING",(0,0), (-1, -1), 4),
+    ]))
+    story.append(_ppt)
+    story.append(_sp(8))
+    story.append(_hr())
+
+    # ── Recommendations ───────────────────────────────────────────────────────
+    story.append(Paragraph("Priority Recommendations", S_H2))
+    story.append(_sp(4))
+    for i, (status, pillar, text) in enumerate(recs, 1):
+        sty = S_CRIT if status == "danger" else S_WARN
+        icon = "CRITICAL" if status == "danger" else "WARNING"
+        story.append(Paragraph(f"{i}. [{icon} — {pillar}] {text}", sty))
+        story.append(_sp(2))
+    story.append(_hr())
+
+    # ── Robots.txt summary ────────────────────────────────────────────────────
+    story.append(Paragraph("Robots & Crawlability", S_H2))
+    story.append(_sp(3))
+    if robots_result.get("found"):
+        story.append(Paragraph(f"robots.txt: Found  |  Sitemaps: {len(robots_result.get('sitemaps', []))}", S_BODY))
+        _blocked = robots_result.get("blocked_resources", [])
+        story.append(Paragraph(f"Blocked resources: {', '.join(_blocked) if _blocked else 'None'}", S_BODY))
+        _ai_results = robots_result.get("ai_agent_results", robots_result.get("ai_results", {}))
+        if _ai_results:
+            _ai_rows = [["Bot", "Status"]]
+            for bn, info in _ai_results.items():
+                _av = info.get("robots_allowed", info.get("allowed"))
+                _as = "Allowed" if _av is True else "Blocked" if _av is False else "Unknown"
+                _ac = _C_SUCCESS if _av is True else _C_DANGER if _av is False else _C_MUTED
+                _ai_rows.append([
+                    Paragraph(bn,  _style("ab", fontSize=8, textColor=_C_WHITE, fontName="Helvetica")),
+                    Paragraph(_as, _style("as", fontSize=8, textColor=_ac,      fontName="Helvetica-Bold")),
+                ])
+            _ait = Table(_ai_rows, colWidths=["70%", "30%"])
+            _ait.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), _C_PRIMARY),
+                ("TEXTCOLOR",  (0,0), (-1,0), white),
+                ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+                ("FONTSIZE",   (0,0), (-1,0), 8),
+                ("ROWBACKGROUNDS", (0,1), (-1,-1), [_C_BG, _C_CARD]),
+                ("GRID",       (0,0), (-1,-1), 0.5, _C_BORDER),
+                ("LEFTPADDING",(0,0), (-1,-1), 6),
+                ("TOPPADDING", (0,0), (-1,-1), 3),
+                ("BOTTOMPADDING",(0,0),(-1,-1),3),
+            ]))
+            story.append(_ait)
+    else:
+        story.append(Paragraph("robots.txt: NOT FOUND", S_CRIT))
+    story.append(_sp(8))
+    story.append(_hr())
+
+    # ── Bot crawl results ─────────────────────────────────────────────────────
+    if bot_crawl_results:
+        story.append(Paragraph("Live Bot Crawl Results", S_H2))
+        story.append(_sp(3))
+        _bc_rows = [["Bot", "Company", "Status", "HTTP", "Load Time"]]
+        for bn, r in bot_crawl_results.items():
+            if r.get("error"):
+                _bc_rows.append([bn, "—", "ERROR", "—", "—"])
+            else:
+                _st = "Allowed" if r.get("is_allowed") else "BLOCKED"
+                _sc = _C_SUCCESS if r.get("is_allowed") else _C_DANGER
+                _bc_rows.append([
+                    Paragraph(bn,              _style("bc1", fontSize=8, textColor=_C_WHITE,  fontName="Helvetica")),
+                    Paragraph(r.get("company",""), _style("bc2", fontSize=8, textColor=_C_MUTED,  fontName="Helvetica")),
+                    Paragraph(_st,             _style("bc3", fontSize=8, textColor=_sc,        fontName="Helvetica-Bold")),
+                    Paragraph(str(r.get("status_code","—")), _style("bc4", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")),
+                    Paragraph(f"{r.get('load_time','—')}s", _style("bc5", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")),
+                ])
+        _bct = Table(_bc_rows, colWidths=["25%", "25%", "20%", "15%", "15%"])
+        _bct.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), _C_PRIMARY),
+            ("TEXTCOLOR",  (0,0), (-1,0), white),
+            ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE",   (0,0), (-1,0), 8),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [_C_BG, _C_CARD]),
+            ("GRID",       (0,0), (-1,-1), 0.5, _C_BORDER),
+            ("LEFTPADDING",(0,0), (-1,-1), 6),
+            ("TOPPADDING", (0,0), (-1,-1), 3),
+            ("BOTTOMPADDING",(0,0),(-1,-1),3),
+        ]))
+        story.append(_bct)
+        story.append(_sp(8))
+        story.append(_hr())
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    story.append(Paragraph("Report generated by Pattern LLM Access Checker", S_MUTED))
+    story.append(Paragraph("https://pattern.com", S_MUTED))
+
+    # Page background colour
+    def _bg_canvas(canvas, doc):
+        canvas.saveState()
+        canvas.setFillColor(_C_BG)
+        canvas.rect(0, 0, A4[0], A4[1], fill=1, stroke=0)
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=_bg_canvas, onLaterPages=_bg_canvas)
+    return buf.getvalue()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # STREAMLIT UI — PATTERN BRANDED
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2494,26 +2714,70 @@ if run_audit or "_audit" in st.session_state:
         domain_slug = parsed.netloc.replace(".", "_")
         date_slug   = time.strftime("%Y%m%d")
 
-        dl_col1, dl_col2 = st.columns(2)
+        report_pdf = generate_report_pdf(
+            parsed.netloc, overall, pillar_scores_dict, url_labels,
+            js_results, llm_result, robots_result, schema_results,
+            semantic_results, bot_crawl_results, recs,
+        )
+        report_json = json.dumps({
+            "domain":        parsed.netloc,
+            "overall_score": overall,
+            "overall_grade": overall_grade,
+            "generated_at":  time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "pillar_scores": pillar_scores_dict,
+            "urls":          url_labels,
+            "recommendations": [{"severity": s, "pillar": p, "text": t} for s, p, t in recs],
+            "js_results":        js_results,
+            "robots_result":     robots_result,
+            "schema_results":    schema_results,
+            "llm_result":        llm_result,
+            "semantic_results":  semantic_results,
+            "security_result":   security_result,
+            "bot_crawl_results": bot_crawl_results,
+        }, indent=2)
+
+        dl_col1, dl_col2, dl_col3, dl_col4 = st.columns(4)
         with dl_col1:
             st.download_button(
-                label="⬇ Download Offline PDF Report (HTML)",
+                label="⬇ PDF Report",
+                data=report_pdf,
+                file_name=f"llm_access_audit_{domain_slug}_{date_slug}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary",
+                key="dl_pdf",
+            )
+            st.caption("Formatted PDF — scores, tables, recommendations.")
+        with dl_col2:
+            st.download_button(
+                label="⬇ HTML Report",
                 data=report_html,
                 file_name=f"llm_access_audit_{domain_slug}_{date_slug}.html",
                 mime="text/html",
                 use_container_width=True,
-                type="primary",
+                key="dl_html",
             )
-            st.caption("Opens in browser — use Ctrl/Cmd+P to save as PDF. All sections expanded.")
-        with dl_col2:
+            st.caption("Opens in browser — Ctrl/Cmd+P to print.")
+        with dl_col3:
             st.download_button(
-                label="⬇ Download Plain Text Report (.txt)",
+                label="⬇ Plain Text",
                 data=report_text,
                 file_name=f"llm_access_audit_{domain_slug}_{date_slug}.txt",
                 mime="text/plain",
                 use_container_width=True,
+                key="dl_txt",
             )
-            st.caption("Plain text — open in any editor.")
+            st.caption("Open in any editor or import to Notion.")
+        with dl_col4:
+            st.download_button(
+                label="⬇ JSON Data",
+                data=report_json,
+                file_name=f"llm_access_audit_{domain_slug}_{date_slug}.json",
+                mime="application/json",
+                use_container_width=True,
+                key="dl_json",
+            )
+            st.caption("Raw scores + full results for integrations.")
 
         # ── FOOTER ────────────────────────────────────────────────────────────
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
