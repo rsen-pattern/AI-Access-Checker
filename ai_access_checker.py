@@ -1777,6 +1777,7 @@ if run_audit or "_audit" in st.session_state:
             base_url,
             robots_raw=robots_result.get("raw", ""),
             homepage_html=homepage_html,
+            sensitive_paths=robots_result.get("sensitive_paths", {}),
         )
         security_score = security_result.get("score", 100)
 
