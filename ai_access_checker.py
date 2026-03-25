@@ -1922,14 +1922,24 @@ if run_audit or "_audit" in st.session_state:
                 # More items left — continue immediately
                 st.rerun()
         else:
-            # Normal single audit — INSERT new row
-            _saved_id, _save_err = save_audit_to_db(
-                domain=parsed.netloc,
-                overall=overall,
-                pillar_scores_dict=_pillar_scores_payload,
-                audited_urls=all_test_urls,
-                full_results=_full_results_payload,
-            )
+            # Normal single audit — UPDATE existing row if one exists, else INSERT
+            _existing = load_audit_history(domain=parsed.netloc, limit=1)
+            if _existing:
+                _saved_id, _save_err = update_audit_in_db(
+                    audit_id=_existing[0]["id"],
+                    overall=overall,
+                    pillar_scores_dict=_pillar_scores_payload,
+                    audited_urls=all_test_urls,
+                    full_results=_full_results_payload,
+                )
+            else:
+                _saved_id, _save_err = save_audit_to_db(
+                    domain=parsed.netloc,
+                    overall=overall,
+                    pillar_scores_dict=_pillar_scores_payload,
+                    audited_urls=all_test_urls,
+                    full_results=_full_results_payload,
+                )
             if _saved_id:
                 st.query_params["audit"] = str(_saved_id)
                 st.session_state["_loaded_audit_id"] = str(_saved_id)
