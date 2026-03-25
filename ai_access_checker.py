@@ -243,6 +243,28 @@ def save_audit_to_db(domain, overall, pillar_scores_dict, audited_urls, full_res
     return None, "Insert returned no data"
 
 
+def update_audit_in_db(audit_id, overall, pillar_scores_dict, audited_urls, full_results=None):
+    """Overwrite an existing audit row with fresh results. Returns (id, error_str)."""
+    sb = get_supabase()
+    if not sb:
+        return None, None
+    try:
+        row = {
+            "overall_score": overall,
+            "pillar_scores": json.dumps(pillar_scores_dict),
+            "urls":          audited_urls,
+            "audited_at":    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        if full_results is not None:
+            row["full_results"] = _sanitise_for_db(full_results)
+        result = sb.table("audits").update(row).eq("id", str(audit_id)).execute()
+        if result.data:
+            return result.data[0].get("id"), None
+    except Exception as e:
+        return None, str(e)
+    return None, "Update returned no data"
+
+
 def load_audit_history(domain=None, limit=10):
     """Load past audits from Supabase. Returns a list of row dicts or []."""
     sb = get_supabase()
@@ -978,6 +1000,45 @@ if _qp_audit_id and _qp_audit_id != _current_audit_id:
         st.query_params.pop("audit", None)
         st.warning("The shared report could not be loaded (saved data is incomplete). Please run a new audit.")
 
+# ── Bulk rerun queue processor ───────────────────────────────────────────────
+# Must run BEFORE tabs so _pending_rerun is set before tab_audit renders
+# and run_audit consumes it.
+if st.session_state.get("_bulk_rerun_queue") and not st.session_state.get("_pending_rerun"):
+    _bq_next_id = st.session_state["_bulk_rerun_queue"][0]
+    _bq_row = load_audit_by_id(_bq_next_id)
+    _bq_label_key_map = {
+        "Homepage": "home", "Category 1": "cat1", "Category 2": "cat2",
+        "Blog 1": "blog1", "Blog 2": "blog2", "Content 1": "blog1",
+        "Content 2": "blog2", "Product 1": "prod1", "Product 2": "prod2",
+    }
+    if _bq_row and _bq_row.get("full_results"):
+        _bfr = _bq_row["full_results"]
+        _bq_inv = {v: k for k, v in (_bfr.get("url_labels") or {}).items()}
+        for _lbl, _wk in _bq_label_key_map.items():
+            if _lbl in _bq_inv:
+                st.session_state[_wk] = _bq_inv[_lbl]
+        st.session_state["no_blog"]            = bool(_bfr.get("no_blog", False))
+        st.session_state["run_bot_crawl"]      = bool(_bfr.get("bot_crawl_results"))
+        st.session_state.pop("_audit", None)
+        st.session_state.pop("_loaded_audit_id", None)
+        st.session_state.pop("_loaded_from_history", None)
+        st.query_params.pop("audit", None)
+        st.session_state["_bulk_rerun_current_id"] = str(_bq_next_id)
+        st.session_state["_pending_rerun"] = True
+    else:
+        # Skip row — no usable full_results
+        st.session_state["_bulk_rerun_queue"].pop(0)
+        _bq_prog = st.session_state.get("_bulk_rerun_progress", {"total": 0, "done": 0})
+        _bq_prog["done"] = _bq_prog.get("done", 0) + 1
+        st.session_state["_bulk_rerun_progress"] = _bq_prog
+
+# ── Bulk rerun status banner ─────────────────────────────────────────────────
+if st.session_state.get("_bulk_rerun_queue") or st.session_state.get("_bulk_rerun_current_id"):
+    _bq_prog = st.session_state.get("_bulk_rerun_progress", {"total": 0, "done": 0})
+    _bq_done  = _bq_prog.get("done", 0)
+    _bq_total = _bq_prog.get("total", 1)
+    st.info(f"🔄 Bulk rerun in progress — {_bq_done}/{_bq_total} complete. Do not close this tab.")
+
 tab_audit, tab_history = st.tabs(["\U0001f50d  New Audit", "\U0001f4cb  Past Audits"])
 with tab_audit:
     # ── INPUT: Mandatory URL structure ────────────────────────────────────────────
@@ -1274,6 +1335,45 @@ with tab_history:
                 _pdiff_html += '</div>'
                 st.markdown(_pdiff_html, unsafe_allow_html=True)
 
+            # ── Bulk Rerun ─────────────────────────────────────────────────────────
+            st.markdown(
+                f'<div style="height:2px;background:linear-gradient(90deg,{BRAND["purple"]},{BRAND["primary"]},transparent);margin:28px 0 16px 0;"></div>'
+                f'<div style="font-size:18px;font-weight:700;color:{BRAND["white"]};margin-bottom:6px;">Bulk Rerun</div>',
+                unsafe_allow_html=True,
+            )
+            _bulk_eligible_ids = [
+                r.get("id") for r in _rows
+                if r.get("id") and isinstance(r.get("full_results"), dict) and "js_results" in (r.get("full_results") or {})
+            ]
+            _active_bulk_q = st.session_state.get("_bulk_rerun_queue")
+            _bulk_prog     = st.session_state.get("_bulk_rerun_progress", {"total": 0, "done": 0})
+            if _active_bulk_q is not None:
+                _bq_done  = _bulk_prog.get("done", 0)
+                _bq_total = _bulk_prog.get("total", 1)
+                st.progress(_bq_done / max(_bq_total, 1),
+                    text=f"Rerunning audits: {_bq_done}/{_bq_total} complete — {len(_active_bulk_q)} remaining")
+                if st.button("Cancel", key="bulk_cancel", type="secondary"):
+                    for _k in ("_bulk_rerun_queue", "_bulk_rerun_progress", "_bulk_rerun_current_id", "_pending_rerun"):
+                        st.session_state.pop(_k, None)
+                    st.rerun()
+            else:
+                if _bulk_eligible_ids:
+                    st.markdown(
+                        f'<div style="color:{BRAND["text_secondary"]};font-size:13px;margin-bottom:10px;">'
+                        f'Reruns all <strong>{len(_bulk_eligible_ids)}</strong> audits in the current view sequentially, '
+                        f'overwriting each row with fresh scores. Do not close this tab while running.</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if st.button(f"🔄 Rerun All ({len(_bulk_eligible_ids)} audits)", key="bulk_rerun_all", type="primary"):
+                        st.session_state["_bulk_rerun_queue"]    = list(_bulk_eligible_ids)
+                        st.session_state["_bulk_rerun_progress"] = {"total": len(_bulk_eligible_ids), "done": 0}
+                        st.rerun()
+                else:
+                    st.markdown(
+                        f'<div style="color:{BRAND["text_secondary"]};font-size:13px;">No audits with full data available to rerun.</div>',
+                        unsafe_allow_html=True,
+                    )
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # AUDIT EXECUTION
@@ -1516,49 +1616,78 @@ if run_audit or "_audit" in st.session_state:
     # has the same key set.
     st.session_state["_audit"]["semantic_score"] = semantic_score
 
-    # ── Save new audit to Supabase (fresh runs only) ──────────────────────
+    # ── Save / update audit to Supabase (fresh runs only) ────────────────
     if run_audit:
-        _saved_id, _save_err = save_audit_to_db(
-            domain=parsed.netloc,
-            overall=overall,
-            pillar_scores_dict={
-                "JS Rendering":       js_score,
-                "Robots & Crawl":     robots_score,
-                "Schema & Entity":    schema_score,
-                "AI Discoverability": llm_score,
-                "Semantic Hierarchy": semantic_score,
-                "Security":           security_score,
-            },
-            audited_urls=all_test_urls,
-            full_results={
-                "all_test_urls":     all_test_urls,
-                "url_labels":        url_labels,
-                "js_results":        js_results,
-                "js_score":          js_score,
-                "robots_result":     robots_result,
-                "robots_score":      robots_score,
-                "schema_results":    schema_results,
-                "schema_score":      schema_score,
-                "llm_result":        llm_result,
-                "llm_score":         llm_score,
-                "semantic_results":  semantic_results,
-                "semantic_score":    semantic_score,
-                "security_result":   security_result,
-                "security_score":    security_score,
-                "bot_crawl_results": bot_crawl_results,
-                "overall":           overall,
-                "overall_grade":     overall_grade,
-                "overall_result":    overall_result,
-                "no_blog":           no_blog,
-            },
-        )
-        if _saved_id:
-            st.query_params["audit"] = str(_saved_id)
-            st.session_state["_loaded_audit_id"] = str(_saved_id)
-        elif get_supabase() is None:
-            st.info("Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets to save audits and generate shareable links.")
-        elif _save_err:
-            st.warning(f"Audit completed but could not be saved to history — DB error: {_save_err}")
+        _full_results_payload = {
+            "all_test_urls":     all_test_urls,
+            "url_labels":        url_labels,
+            "js_results":        js_results,
+            "js_score":          js_score,
+            "robots_result":     robots_result,
+            "robots_score":      robots_score,
+            "schema_results":    schema_results,
+            "schema_score":      schema_score,
+            "llm_result":        llm_result,
+            "llm_score":         llm_score,
+            "semantic_results":  semantic_results,
+            "semantic_score":    semantic_score,
+            "security_result":   security_result,
+            "security_score":    security_score,
+            "bot_crawl_results": bot_crawl_results,
+            "overall":           overall,
+            "overall_grade":     overall_grade,
+            "overall_result":    overall_result,
+            "no_blog":           no_blog,
+        }
+        _pillar_scores_payload = {
+            "JS Rendering":       js_score,
+            "Robots & Crawl":     robots_score,
+            "Schema & Entity":    schema_score,
+            "AI Discoverability": llm_score,
+            "Semantic Hierarchy": semantic_score,
+            "Security":           security_score,
+        }
+        _bulk_id = st.session_state.pop("_bulk_rerun_current_id", None)
+        if _bulk_id:
+            # Bulk rerun — UPDATE existing row in place
+            _saved_id, _save_err = update_audit_in_db(
+                audit_id=_bulk_id,
+                overall=overall,
+                pillar_scores_dict=_pillar_scores_payload,
+                audited_urls=all_test_urls,
+                full_results=_full_results_payload,
+            )
+            if _save_err:
+                st.warning(f"Bulk rerun: could not update row {_bulk_id} — {_save_err}")
+            # Advance queue and update progress
+            if st.session_state.get("_bulk_rerun_queue"):
+                st.session_state["_bulk_rerun_queue"].pop(0)
+            _bq_prog = st.session_state.get("_bulk_rerun_progress", {"total": 0, "done": 0})
+            _bq_prog["done"] = _bq_prog.get("done", 0) + 1
+            st.session_state["_bulk_rerun_progress"] = _bq_prog
+            if not st.session_state.get("_bulk_rerun_queue"):
+                # All done — clean up and notify
+                st.success(f"Bulk rerun complete — all {_bq_prog['total']} audits updated with fresh scores.")
+                st.session_state.pop("_bulk_rerun_progress", None)
+            else:
+                # More items left — continue immediately
+                st.rerun()
+        else:
+            # Normal single audit — INSERT new row
+            _saved_id, _save_err = save_audit_to_db(
+                domain=parsed.netloc,
+                overall=overall,
+                pillar_scores_dict=_pillar_scores_payload,
+                audited_urls=all_test_urls,
+                full_results=_full_results_payload,
+            )
+            if _saved_id:
+                st.query_params["audit"] = str(_saved_id)
+                st.session_state["_loaded_audit_id"] = str(_saved_id)
+            elif get_supabase() is None:
+                st.info("Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets to save audits and generate shareable links.")
+            elif _save_err:
+                st.warning(f"Audit completed but could not be saved to history — DB error: {_save_err}")
 
     with tab_audit:
         # ══════════════════════════════════════════════════════════════════════
