@@ -222,10 +222,10 @@ def _sanitise_for_db(obj, _depth=0):
 
 
 def save_audit_to_db(domain, overall, pillar_scores_dict, audited_urls, full_results=None):
-    """Persist full audit results to Supabase. Silently no-ops if DB not configured."""
+    """Persist full audit results to Supabase. Returns (id, error_str)."""
     sb = get_supabase()
     if not sb:
-        return
+        return None, None  # Not configured — caller handles messaging
     try:
         row = {
             "domain":        domain,
@@ -237,10 +237,32 @@ def save_audit_to_db(domain, overall, pillar_scores_dict, audited_urls, full_res
             row["full_results"] = _sanitise_for_db(full_results)
         result = sb.table("audits").insert(row).execute()
         if result.data:
-            return result.data[0].get("id")
-    except Exception:
-        pass  # Never crash the app due to a DB write failure
-    return None
+            return result.data[0].get("id"), None
+    except Exception as e:
+        return None, str(e)  # Surface the error — never crash the app
+    return None, "Insert returned no data"
+
+
+def update_audit_in_db(audit_id, overall, pillar_scores_dict, audited_urls, full_results=None):
+    """Overwrite an existing audit row with fresh results. Returns (id, error_str)."""
+    sb = get_supabase()
+    if not sb:
+        return None, None
+    try:
+        row = {
+            "overall_score": overall,
+            "pillar_scores": json.dumps(pillar_scores_dict),
+            "urls":          audited_urls,
+            "audited_at":    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        if full_results is not None:
+            row["full_results"] = _sanitise_for_db(full_results)
+        result = sb.table("audits").update(row).eq("id", str(audit_id)).execute()
+        if result.data:
+            return result.data[0].get("id"), None
+    except Exception as e:
+        return None, str(e)
+    return None, "Update returned no data"
 
 
 def load_audit_history(domain=None, limit=10):
@@ -299,6 +321,17 @@ def normalise_url(url: str) -> str:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     return url
+
+
+def _page_type_from_label(label: str) -> str:
+    """Map a URL label ('Blog 1', 'Content 1', 'Product 2', …) to a page_type key."""
+    l = label.lower()
+    if "homepage" in l:  return "homepage"
+    if "blog" in l:      return "blog"
+    if "content" in l or "about" in l or "contact" in l or "story" in l: return "content"
+    if "category" in l or "collection" in l: return "category"
+    if "product" in l:   return "product"
+    return "general"
 
 
 def fetch(url: str, timeout: int = 15, user_agent: str = None):
@@ -610,7 +643,14 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
             schema_sec += _status(f"Title ({len(title)} chars): {title[:80]}", "success" if title else "danger")
             schema_sec += _status(f"Meta description: {desc_len} chars", "success" if 100 <= desc_len <= 160 else "warning")
             canon = meta_data.get("canonical", "")
-            schema_sec += _status(f"Canonical: {canon[:80] or 'Missing'}", "success" if canon else "warning")
+            if not canon:
+                schema_sec += _status("Canonical: Missing", "warning")
+            elif meta_data.get("canonical_matches_url"):
+                schema_sec += _status(f"Canonical: Matching — {canon[:80]}", "success")
+            else:
+                schema_sec += _status(f"Canonical: Not matching — {canon[:80]}", "danger")
+            if meta_data.get("was_redirected"):
+                schema_sec += _status(f"Redirect detected — fetched: {meta_data.get('final_url','')[:80]}", "warning")
         if not schemas:
             schema_sec += _status("No Schema.org structured data found", "warning")
 
@@ -898,6 +938,226 @@ def generate_report_text(domain, overall, pillar_scores, url_labels, js_results,
     return "\n".join(lines)
 
 
+def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
+                         llm_result, robots_result, schema_results, semantic_results,
+                         bot_crawl_results, recs):
+    """Generate a formatted PDF audit report using ReportLab. Returns bytes."""
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.colors import HexColor, white, black
+    from reportlab.lib.units import mm
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    import io as _io
+
+    _C_BG      = HexColor("#0A0A0F")
+    _C_CARD    = HexColor("#13131A")
+    _C_BORDER  = HexColor("#2A2A3A")
+    _C_WHITE   = HexColor("#FFFFFF")
+    _C_MUTED   = HexColor("#8B8BA0")
+    _C_PRIMARY = HexColor("#6C63FF")
+    _C_TEAL    = HexColor("#00E5CC")
+    _C_WARN    = HexColor("#FFB547")
+    _C_DANGER  = HexColor("#FF4757")
+    _C_SUCCESS = HexColor("#2ECC71")
+
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=18*mm, rightMargin=18*mm,
+        topMargin=18*mm, bottomMargin=18*mm,
+    )
+
+    styles = getSampleStyleSheet()
+    def _style(name, **kw):
+        base = styles["Normal"]
+        return ParagraphStyle(name, parent=base, **kw)
+
+    S_H1    = _style("H1",    fontSize=20, textColor=_C_WHITE,   spaceAfter=4,  fontName="Helvetica-Bold",  alignment=TA_CENTER)
+    S_H2    = _style("H2",    fontSize=14, textColor=_C_WHITE,   spaceAfter=2,  fontName="Helvetica-Bold")
+    S_H3    = _style("H3",    fontSize=11, textColor=_C_PRIMARY, spaceAfter=2,  fontName="Helvetica-Bold")
+    S_BODY  = _style("BODY",  fontSize=9,  textColor=_C_WHITE,   spaceAfter=2,  fontName="Helvetica",       leading=13)
+    S_MUTED = _style("MUTED", fontSize=8,  textColor=_C_MUTED,   spaceAfter=2,  fontName="Helvetica")
+    S_CRIT  = _style("CRIT",  fontSize=9,  textColor=_C_DANGER,  spaceAfter=2,  fontName="Helvetica-Bold")
+    S_WARN  = _style("WARN",  fontSize=9,  textColor=_C_WARN,    spaceAfter=2,  fontName="Helvetica-Bold")
+    S_OK    = _style("OK",    fontSize=9,  textColor=_C_SUCCESS, spaceAfter=2,  fontName="Helvetica-Bold")
+
+    def _score_color(sc):
+        if sc >= 80: return _C_SUCCESS
+        if sc >= 55: return _C_WARN
+        return _C_DANGER
+
+    def _hr():
+        return HRFlowable(width="100%", thickness=1, color=_C_BORDER, spaceAfter=6, spaceBefore=6)
+
+    def _sp(h=4):
+        return Spacer(1, h)
+
+    story = []
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    story.append(Paragraph("PATTERN — LLM Access Checker", S_H1))
+    story.append(Paragraph(f"Full LLM Access Audit: {domain}", _style("sub", fontSize=11, textColor=_C_MUTED, alignment=TA_CENTER)))
+    story.append(Paragraph(f"Generated: {time.strftime('%Y-%m-%d %H:%M UTC')}", _style("date", fontSize=8, textColor=_C_MUTED, alignment=TA_CENTER)))
+    story.append(_sp(8))
+    story.append(_hr())
+
+    # ── Overall score ─────────────────────────────────────────────────────────
+    story.append(_sp(4))
+    story.append(Paragraph(f"Overall LLM Readiness Score: {overall}%", _style("ov", fontSize=18, textColor=_score_color(overall), fontName="Helvetica-Bold", alignment=TA_CENTER)))
+    story.append(_sp(8))
+
+    # Pillar score table
+    _pillar_data = [["Pillar", "Score", "Grade"]]
+    for pname, psc in pillar_scores.items():
+        if psc >= 80:   grade, color = "Good",  _C_SUCCESS
+        elif psc >= 55: grade, color = "Fair",  _C_WARN
+        else:           grade, color = "Poor",  _C_DANGER
+        _pillar_data.append([
+            Paragraph(pname, _style("pt", fontSize=9, textColor=_C_WHITE, fontName="Helvetica")),
+            Paragraph(f"{psc}%", _style("ps", fontSize=9, textColor=color, fontName="Helvetica-Bold")),
+            Paragraph(grade,     _style("pg", fontSize=9, textColor=color, fontName="Helvetica")),
+        ])
+    _pt = Table(_pillar_data, colWidths=["60%", "20%", "20%"])
+    _pt.setStyle(TableStyle([
+        ("BACKGROUND",  (0, 0), (-1, 0),  _C_PRIMARY),
+        ("TEXTCOLOR",   (0, 0), (-1, 0),  white),
+        ("FONTNAME",    (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTSIZE",    (0, 0), (-1, 0),  9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_C_BG, _C_CARD]),
+        ("GRID",        (0, 0), (-1, -1), 0.5, _C_BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING",  (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING",(0,0), (-1, -1), 5),
+    ]))
+    story.append(_pt)
+    story.append(_sp(8))
+    story.append(_hr())
+
+    # ── Per-page summary table ────────────────────────────────────────────────
+    story.append(Paragraph("Per-Page Results", S_H2))
+    story.append(_sp(4))
+    _pp_data = [["Page", "URL", "JS", "Schema"]]
+    for url_key, label in url_labels.items():
+        _js_s  = js_results.get(url_key, {}).get("score", "—")
+        _sc_s  = schema_results.get(url_key, {}).get("score", "—")
+        _pp_data.append([
+            Paragraph(label,   _style("pl", fontSize=8, textColor=_C_WHITE,   fontName="Helvetica")),
+            Paragraph(url_key, _style("pu", fontSize=7, textColor=_C_MUTED,   fontName="Helvetica")),
+            Paragraph(str(_js_s), _style("pj", fontSize=8, textColor=_score_color(_js_s) if isinstance(_js_s, int) else _C_MUTED, fontName="Helvetica-Bold")),
+            Paragraph(str(_sc_s), _style("pk", fontSize=8, textColor=_score_color(_sc_s) if isinstance(_sc_s, int) else _C_MUTED, fontName="Helvetica-Bold")),
+        ])
+    _ppt = Table(_pp_data, colWidths=["18%", "52%", "15%", "15%"])
+    _ppt.setStyle(TableStyle([
+        ("BACKGROUND",  (0, 0), (-1, 0),  _C_PRIMARY),
+        ("TEXTCOLOR",   (0, 0), (-1, 0),  white),
+        ("FONTNAME",    (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTSIZE",    (0, 0), (-1, 0),  8),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_C_BG, _C_CARD]),
+        ("GRID",        (0, 0), (-1, -1), 0.5, _C_BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING",  (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING",(0,0), (-1, -1), 4),
+    ]))
+    story.append(_ppt)
+    story.append(_sp(8))
+    story.append(_hr())
+
+    # ── Recommendations ───────────────────────────────────────────────────────
+    story.append(Paragraph("Priority Recommendations", S_H2))
+    story.append(_sp(4))
+    for i, (status, pillar, text) in enumerate(recs, 1):
+        sty = S_CRIT if status == "danger" else S_WARN
+        icon = "CRITICAL" if status == "danger" else "WARNING"
+        story.append(Paragraph(f"{i}. [{icon} — {pillar}] {text}", sty))
+        story.append(_sp(2))
+    story.append(_hr())
+
+    # ── Robots.txt summary ────────────────────────────────────────────────────
+    story.append(Paragraph("Robots & Crawlability", S_H2))
+    story.append(_sp(3))
+    if robots_result.get("found"):
+        story.append(Paragraph(f"robots.txt: Found  |  Sitemaps: {len(robots_result.get('sitemaps', []))}", S_BODY))
+        _blocked = robots_result.get("blocked_resources", [])
+        story.append(Paragraph(f"Blocked resources: {', '.join(_blocked) if _blocked else 'None'}", S_BODY))
+        _ai_results = robots_result.get("ai_agent_results", robots_result.get("ai_results", {}))
+        if _ai_results:
+            _ai_rows = [["Bot", "Status"]]
+            for bn, info in _ai_results.items():
+                _av = info.get("robots_allowed", info.get("allowed"))
+                _as = "Allowed" if _av is True else "Blocked" if _av is False else "Unknown"
+                _ac = _C_SUCCESS if _av is True else _C_DANGER if _av is False else _C_MUTED
+                _ai_rows.append([
+                    Paragraph(bn,  _style("ab", fontSize=8, textColor=_C_WHITE, fontName="Helvetica")),
+                    Paragraph(_as, _style("as", fontSize=8, textColor=_ac,      fontName="Helvetica-Bold")),
+                ])
+            _ait = Table(_ai_rows, colWidths=["70%", "30%"])
+            _ait.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), _C_PRIMARY),
+                ("TEXTCOLOR",  (0,0), (-1,0), white),
+                ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+                ("FONTSIZE",   (0,0), (-1,0), 8),
+                ("ROWBACKGROUNDS", (0,1), (-1,-1), [_C_BG, _C_CARD]),
+                ("GRID",       (0,0), (-1,-1), 0.5, _C_BORDER),
+                ("LEFTPADDING",(0,0), (-1,-1), 6),
+                ("TOPPADDING", (0,0), (-1,-1), 3),
+                ("BOTTOMPADDING",(0,0),(-1,-1),3),
+            ]))
+            story.append(_ait)
+    else:
+        story.append(Paragraph("robots.txt: NOT FOUND", S_CRIT))
+    story.append(_sp(8))
+    story.append(_hr())
+
+    # ── Bot crawl results ─────────────────────────────────────────────────────
+    if bot_crawl_results:
+        story.append(Paragraph("Live Bot Crawl Results", S_H2))
+        story.append(_sp(3))
+        _bc_rows = [["Bot", "Company", "Status", "HTTP", "Load Time"]]
+        for bn, r in bot_crawl_results.items():
+            if r.get("error"):
+                _bc_rows.append([bn, "—", "ERROR", "—", "—"])
+            else:
+                _st = "Allowed" if r.get("is_allowed") else "BLOCKED"
+                _sc = _C_SUCCESS if r.get("is_allowed") else _C_DANGER
+                _bc_rows.append([
+                    Paragraph(bn,              _style("bc1", fontSize=8, textColor=_C_WHITE,  fontName="Helvetica")),
+                    Paragraph(r.get("company",""), _style("bc2", fontSize=8, textColor=_C_MUTED,  fontName="Helvetica")),
+                    Paragraph(_st,             _style("bc3", fontSize=8, textColor=_sc,        fontName="Helvetica-Bold")),
+                    Paragraph(str(r.get("status_code","—")), _style("bc4", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")),
+                    Paragraph(f"{r.get('load_time','—')}s", _style("bc5", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")),
+                ])
+        _bct = Table(_bc_rows, colWidths=["25%", "25%", "20%", "15%", "15%"])
+        _bct.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), _C_PRIMARY),
+            ("TEXTCOLOR",  (0,0), (-1,0), white),
+            ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE",   (0,0), (-1,0), 8),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [_C_BG, _C_CARD]),
+            ("GRID",       (0,0), (-1,-1), 0.5, _C_BORDER),
+            ("LEFTPADDING",(0,0), (-1,-1), 6),
+            ("TOPPADDING", (0,0), (-1,-1), 3),
+            ("BOTTOMPADDING",(0,0),(-1,-1),3),
+        ]))
+        story.append(_bct)
+        story.append(_sp(8))
+        story.append(_hr())
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    story.append(Paragraph("Report generated by Pattern LLM Access Checker", S_MUTED))
+    story.append(Paragraph("https://pattern.com", S_MUTED))
+
+    # Page background colour
+    def _bg_canvas(canvas, doc):
+        canvas.saveState()
+        canvas.setFillColor(_C_BG)
+        canvas.rect(0, 0, A4[0], A4[1], fill=1, stroke=0)
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=_bg_canvas, onLaterPages=_bg_canvas)
+    return buf.getvalue()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # STREAMLIT UI — PATTERN BRANDED
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -960,6 +1220,45 @@ if _qp_audit_id and _qp_audit_id != _current_audit_id:
         st.query_params.pop("audit", None)
         st.warning("The shared report could not be loaded (saved data is incomplete). Please run a new audit.")
 
+# ── Bulk rerun queue processor ───────────────────────────────────────────────
+# Must run BEFORE tabs so _pending_rerun is set before tab_audit renders
+# and run_audit consumes it.
+if st.session_state.get("_bulk_rerun_queue") and not st.session_state.get("_pending_rerun"):
+    _bq_next_id = st.session_state["_bulk_rerun_queue"][0]
+    _bq_row = load_audit_by_id(_bq_next_id)
+    _bq_label_key_map = {
+        "Homepage": "home", "Category 1": "cat1", "Category 2": "cat2",
+        "Blog 1": "blog1", "Blog 2": "blog2", "Content 1": "blog1",
+        "Content 2": "blog2", "Product 1": "prod1", "Product 2": "prod2",
+    }
+    if _bq_row and _bq_row.get("full_results"):
+        _bfr = _bq_row["full_results"]
+        _bq_inv = {v: k for k, v in (_bfr.get("url_labels") or {}).items()}
+        for _lbl, _wk in _bq_label_key_map.items():
+            if _lbl in _bq_inv:
+                st.session_state[_wk] = _bq_inv[_lbl]
+        st.session_state["no_blog"]            = bool(_bfr.get("no_blog", False))
+        st.session_state["run_bot_crawl"]      = bool(_bfr.get("bot_crawl_results"))
+        st.session_state.pop("_audit", None)
+        st.session_state.pop("_loaded_audit_id", None)
+        st.session_state.pop("_loaded_from_history", None)
+        st.query_params.pop("audit", None)
+        st.session_state["_bulk_rerun_current_id"] = str(_bq_next_id)
+        st.session_state["_pending_rerun"] = True
+    else:
+        # Skip row — no usable full_results
+        st.session_state["_bulk_rerun_queue"].pop(0)
+        _bq_prog = st.session_state.get("_bulk_rerun_progress", {"total": 0, "done": 0})
+        _bq_prog["done"] = _bq_prog.get("done", 0) + 1
+        st.session_state["_bulk_rerun_progress"] = _bq_prog
+
+# ── Bulk rerun status banner ─────────────────────────────────────────────────
+if st.session_state.get("_bulk_rerun_queue") or st.session_state.get("_bulk_rerun_current_id"):
+    _bq_prog = st.session_state.get("_bulk_rerun_progress", {"total": 0, "done": 0})
+    _bq_done  = _bq_prog.get("done", 0)
+    _bq_total = _bq_prog.get("total", 1)
+    st.info(f"🔄 Bulk rerun in progress — {_bq_done}/{_bq_total} complete. Do not close this tab.")
+
 tab_audit, tab_history = st.tabs(["\U0001f50d  New Audit", "\U0001f4cb  Past Audits"])
 with tab_audit:
     # ── INPUT: Mandatory URL structure ────────────────────────────────────────────
@@ -986,9 +1285,19 @@ with tab_audit:
         prod_url_2 = st.text_input("Product Page 2", placeholder="https://example.com/products/item-2", key="prod2", label_visibility="collapsed")
 
     with st.expander("⚙️  Advanced Options"):
-        run_bot_crawl = st.checkbox("Run live bot crawl test (sends requests as each AI bot)", value=True)
+        run_bot_crawl = st.checkbox("Run live bot crawl test (sends requests as each AI bot)", value=True, key="run_bot_crawl")
+        st.markdown("---")
+        st.markdown(f'<div style="font-size:13px;font-weight:600;color:{BRAND["white"]};margin-bottom:4px;">Content / Blog Pages</div>', unsafe_allow_html=True)
+        no_blog = st.checkbox(
+            "This site has no blog — using About / Contact / Story pages instead",
+            value=False,
+            key="no_blog",
+            help="When checked, blog field URLs are treated as general content pages. A scoring penalty applies for the absence of editorial content.",
+        )
+        if no_blog:
+            st.markdown(f'<div style="font-size:12px;color:{BRAND["warning"]};margin-top:4px;">⚠️ A penalty will be applied to the Schema & Entity score for missing editorial blog content. These pages will be evaluated against About/Contact schema expectations instead.</div>', unsafe_allow_html=True)
 
-    run_audit = st.button("Run Audit", type="primary", use_container_width=True)
+    run_audit = st.button("Run Audit", type="primary", use_container_width=True) or st.session_state.pop("_pending_rerun", False)
 
     # Collect and validate URLs
     all_url_inputs = {
@@ -1107,8 +1416,16 @@ with tab_history:
             st.download_button("Download CSV", _csv_buf.getvalue(), "audit_history.csv", "text/csv",
                                use_container_width=False, key="csv_export")
 
-            # ── Load Report buttons ─────────────────────────────────────────────
-            st.markdown(f'<div style="margin-top:16px;color:{BRAND["text_secondary"]};font-size:12px;margin-bottom:6px;">Load or share a full report:</div>', unsafe_allow_html=True)
+            # ── Load / Rerun Report buttons ──────────────────────────────────────
+            # Maps stored url_labels keys → text_input widget session-state keys
+            _LABEL_TO_KEY = {
+                "Homepage":   "home",
+                "Category 1": "cat1", "Category 2": "cat2",
+                "Blog 1":     "blog1", "Blog 2":     "blog2",
+                "Content 1":  "blog1", "Content 2":  "blog2",  # no_blog aliases
+                "Product 1":  "prod1", "Product 2":  "prod2",
+            }
+            st.markdown(f'<div style="margin-top:16px;color:{BRAND["text_secondary"]};font-size:12px;margin-bottom:6px;">Load, rerun, or share a full report:</div>', unsafe_allow_html=True)
             for _row in _rows:
                 _fr = _row.get("full_results")
                 _dom  = _row.get("domain", "—")
@@ -1117,7 +1434,7 @@ with tab_history:
                 _label = f"{_dom} · {_date} · {_sc}%"
                 _has_full = _fr is not None and isinstance(_fr, dict) and "js_results" in _fr
                 _audit_id = _row.get("id")
-                _btn_col, _share_col, _del_col, _info_col = st.columns([3, 1, 1, 4])
+                _btn_col, _rerun_col, _share_col, _del_col, _info_col = st.columns([3, 1, 1, 1, 3])
                 with _btn_col:
                     if st.button(f"📋 {_label}", key=f"load_{_audit_id or _label}", disabled=not _has_full, use_container_width=True):
                         st.session_state["_audit"] = _fr
@@ -1125,6 +1442,23 @@ with tab_history:
                         if _audit_id:
                             st.query_params["audit"] = str(_audit_id)
                             st.session_state["_loaded_audit_id"] = str(_audit_id)
+                        st.rerun()
+                with _rerun_col:
+                    if _has_full and st.button("🔄", key=f"rerun_{_audit_id}", help="Rerun this audit with fresh checks", use_container_width=True):
+                        # Pre-populate form inputs via widget session-state keys
+                        _inv = {v: k for k, v in (_fr.get("url_labels") or {}).items()}
+                        for _lbl, _widget_key in _LABEL_TO_KEY.items():
+                            if _lbl in _inv:
+                                st.session_state[_widget_key] = _inv[_lbl]
+                        # Restore Advanced Options flags
+                        st.session_state["no_blog"]       = bool(_fr.get("no_blog", False))
+                        st.session_state["run_bot_crawl"] = bool(_fr.get("bot_crawl_results"))
+                        # Clear any previously cached result so a fresh audit runs
+                        st.session_state.pop("_audit", None)
+                        st.session_state.pop("_loaded_audit_id", None)
+                        st.session_state.pop("_loaded_from_history", None)
+                        st.query_params.pop("audit", None)
+                        st.session_state["_pending_rerun"] = True
                         st.rerun()
                 with _share_col:
                     if _audit_id and _has_full:
@@ -1221,6 +1555,45 @@ with tab_history:
                 _pdiff_html += '</div>'
                 st.markdown(_pdiff_html, unsafe_allow_html=True)
 
+            # ── Bulk Rerun ─────────────────────────────────────────────────────────
+            st.markdown(
+                f'<div style="height:2px;background:linear-gradient(90deg,{BRAND["purple"]},{BRAND["primary"]},transparent);margin:28px 0 16px 0;"></div>'
+                f'<div style="font-size:18px;font-weight:700;color:{BRAND["white"]};margin-bottom:6px;">Bulk Rerun</div>',
+                unsafe_allow_html=True,
+            )
+            _bulk_eligible_ids = [
+                r.get("id") for r in _rows
+                if r.get("id") and isinstance(r.get("full_results"), dict) and "js_results" in (r.get("full_results") or {})
+            ]
+            _active_bulk_q = st.session_state.get("_bulk_rerun_queue")
+            _bulk_prog     = st.session_state.get("_bulk_rerun_progress", {"total": 0, "done": 0})
+            if _active_bulk_q is not None:
+                _bq_done  = _bulk_prog.get("done", 0)
+                _bq_total = _bulk_prog.get("total", 1)
+                st.progress(_bq_done / max(_bq_total, 1),
+                    text=f"Rerunning audits: {_bq_done}/{_bq_total} complete — {len(_active_bulk_q)} remaining")
+                if st.button("Cancel", key="bulk_cancel", type="secondary"):
+                    for _k in ("_bulk_rerun_queue", "_bulk_rerun_progress", "_bulk_rerun_current_id", "_pending_rerun"):
+                        st.session_state.pop(_k, None)
+                    st.rerun()
+            else:
+                if _bulk_eligible_ids:
+                    st.markdown(
+                        f'<div style="color:{BRAND["text_secondary"]};font-size:13px;margin-bottom:10px;">'
+                        f'Reruns all <strong>{len(_bulk_eligible_ids)}</strong> audits in the current view sequentially, '
+                        f'overwriting each row with fresh scores. Do not close this tab while running.</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if st.button(f"🔄 Rerun All ({len(_bulk_eligible_ids)} audits)", key="bulk_rerun_all", type="primary"):
+                        st.session_state["_bulk_rerun_queue"]    = list(_bulk_eligible_ids)
+                        st.session_state["_bulk_rerun_progress"] = {"total": len(_bulk_eligible_ids), "done": 0}
+                        st.rerun()
+                else:
+                    st.markdown(
+                        f'<div style="color:{BRAND["text_secondary"]};font-size:13px;">No audits with full data available to rerun.</div>',
+                        unsafe_allow_html=True,
+                    )
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # AUDIT EXECUTION
@@ -1243,11 +1616,16 @@ if run_audit or "_audit" in st.session_state:
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-        # URL labels for display
+        # URL labels and page types for display and scoring
         url_labels = {}
+        url_page_types = {}
         for name, u in all_url_inputs.items():
             if u and u.strip():
-                url_labels[normalise_url(u.strip())] = name
+                # Remap blog labels when no_blog is flagged
+                display_name = name.replace("Blog", "Content") if (no_blog and "Blog" in name) else name
+                norm = normalise_url(u.strip())
+                url_labels[norm] = display_name
+                url_page_types[norm] = _page_type_from_label(display_name)
 
         # ── ESTIMATED TIME BREAKDOWN ──────────────────────────────────────────
         n_pages = len(all_test_urls)
@@ -1305,7 +1683,7 @@ if run_audit or "_audit" in st.session_state:
         progress.progress(3, text=f"[1/6] JS Rendering — checking {n_pages} pages… (est. {js_label.split('(')[0].strip()})")
         js_results = {}
         with ThreadPoolExecutor(max_workers=3) as _pool:
-            _futs = {_pool.submit(check_js_rendering, u, get_secret): u for u in all_test_urls}
+            _futs = {_pool.submit(check_js_rendering, u, get_secret, url_page_types.get(u, "general")): u for u in all_test_urls}
             for _done_count, _f in enumerate(as_completed(_futs), 1):
                 _u = _futs[_f]
                 try:
@@ -1329,7 +1707,7 @@ if run_audit or "_audit" in st.session_state:
         # ── PILLAR 3: SCHEMA & ENTITY (all pages — parallelized) ─────────────
         schema_results = {}
         with ThreadPoolExecutor(max_workers=3) as _pool:
-            _futs = {_pool.submit(check_schema_meta, u): u for u in all_test_urls}
+            _futs = {_pool.submit(check_schema_meta, u, url_page_types.get(u, "general")): u for u in all_test_urls}
             for _done_count, _f in enumerate(as_completed(_futs), 1):
                 _u = _futs[_f]
                 try:
@@ -1346,6 +1724,9 @@ if run_audit or "_audit" in st.session_state:
         progress.progress(55, text=f"[4/7] AI Discoverability — llm.txt, AI info page, well-known files… · {elapsed}s elapsed")
         llm_result = check_llm_discoverability(base_url, homepage_html)
         llm_score = llm_result.get("score", 0)
+        # No-blog penalty: AI cannot learn about the brand without editorial content
+        if no_blog:
+            llm_score = max(0, llm_score - 10)
 
         # ── SEMANTIC HIERARCHY (all pages) ────────────────────────────────────
         elapsed = round(time.time() - audit_start)
@@ -1411,6 +1792,7 @@ if run_audit or "_audit" in st.session_state:
             "overall":       overall,
             "overall_grade": overall_grade,
             "overall_result": overall_result,
+            "no_blog":       no_blog,
         }
 
     # ── Unpack results (fresh audit or cached) ────────────────────────────
@@ -1432,6 +1814,7 @@ if run_audit or "_audit" in st.session_state:
     overall         = _a.get("overall", 0)
     overall_grade   = _a.get("overall_grade", "?")
     overall_result  = _a.get("overall_result", {"score": overall, "grade": overall_grade})
+    no_blog         = _a.get("no_blog", False)
     url             = all_test_urls[0]
     parsed          = urlparse(url)
     base_url        = f"{parsed.scheme}://{parsed.netloc}"
@@ -1453,46 +1836,78 @@ if run_audit or "_audit" in st.session_state:
     # has the same key set.
     st.session_state["_audit"]["semantic_score"] = semantic_score
 
-    # ── Save new audit to Supabase (fresh runs only) ──────────────────────
+    # ── Save / update audit to Supabase (fresh runs only) ────────────────
     if run_audit:
-        _saved_id = save_audit_to_db(
-            domain=parsed.netloc,
-            overall=overall,
-            pillar_scores_dict={
-                "JS Rendering":       js_score,
-                "Robots & Crawl":     robots_score,
-                "Schema & Entity":    schema_score,
-                "AI Discoverability": llm_score,
-                "Semantic Hierarchy": semantic_score,
-                "Security":           security_score,
-            },
-            audited_urls=all_test_urls,
-            full_results={
-                "all_test_urls":     all_test_urls,
-                "url_labels":        url_labels,
-                "js_results":        js_results,
-                "js_score":          js_score,
-                "robots_result":     robots_result,
-                "robots_score":      robots_score,
-                "schema_results":    schema_results,
-                "schema_score":      schema_score,
-                "llm_result":        llm_result,
-                "llm_score":         llm_score,
-                "semantic_results":  semantic_results,
-                "semantic_score":    semantic_score,
-                "security_result":   security_result,
-                "security_score":    security_score,
-                "bot_crawl_results": bot_crawl_results,
-                "overall":           overall,
-                "overall_grade":     overall_grade,
-                "overall_result":    overall_result,
-            },
-        )
-        if _saved_id:
-            st.query_params["audit"] = str(_saved_id)
-            st.session_state["_loaded_audit_id"] = str(_saved_id)
-        elif get_supabase() is None:
-            st.info("Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets to save audits and generate shareable links.")
+        _full_results_payload = {
+            "all_test_urls":     all_test_urls,
+            "url_labels":        url_labels,
+            "js_results":        js_results,
+            "js_score":          js_score,
+            "robots_result":     robots_result,
+            "robots_score":      robots_score,
+            "schema_results":    schema_results,
+            "schema_score":      schema_score,
+            "llm_result":        llm_result,
+            "llm_score":         llm_score,
+            "semantic_results":  semantic_results,
+            "semantic_score":    semantic_score,
+            "security_result":   security_result,
+            "security_score":    security_score,
+            "bot_crawl_results": bot_crawl_results,
+            "overall":           overall,
+            "overall_grade":     overall_grade,
+            "overall_result":    overall_result,
+            "no_blog":           no_blog,
+        }
+        _pillar_scores_payload = {
+            "JS Rendering":       js_score,
+            "Robots & Crawl":     robots_score,
+            "Schema & Entity":    schema_score,
+            "AI Discoverability": llm_score,
+            "Semantic Hierarchy": semantic_score,
+            "Security":           security_score,
+        }
+        _bulk_id = st.session_state.pop("_bulk_rerun_current_id", None)
+        if _bulk_id:
+            # Bulk rerun — UPDATE existing row in place
+            _saved_id, _save_err = update_audit_in_db(
+                audit_id=_bulk_id,
+                overall=overall,
+                pillar_scores_dict=_pillar_scores_payload,
+                audited_urls=all_test_urls,
+                full_results=_full_results_payload,
+            )
+            if _save_err:
+                st.warning(f"Bulk rerun: could not update row {_bulk_id} — {_save_err}")
+            # Advance queue and update progress
+            if st.session_state.get("_bulk_rerun_queue"):
+                st.session_state["_bulk_rerun_queue"].pop(0)
+            _bq_prog = st.session_state.get("_bulk_rerun_progress", {"total": 0, "done": 0})
+            _bq_prog["done"] = _bq_prog.get("done", 0) + 1
+            st.session_state["_bulk_rerun_progress"] = _bq_prog
+            if not st.session_state.get("_bulk_rerun_queue"):
+                # All done — clean up and notify
+                st.success(f"Bulk rerun complete — all {_bq_prog['total']} audits updated with fresh scores.")
+                st.session_state.pop("_bulk_rerun_progress", None)
+            else:
+                # More items left — continue immediately
+                st.rerun()
+        else:
+            # Normal single audit — INSERT new row
+            _saved_id, _save_err = save_audit_to_db(
+                domain=parsed.netloc,
+                overall=overall,
+                pillar_scores_dict=_pillar_scores_payload,
+                audited_urls=all_test_urls,
+                full_results=_full_results_payload,
+            )
+            if _saved_id:
+                st.query_params["audit"] = str(_saved_id)
+                st.session_state["_loaded_audit_id"] = str(_saved_id)
+            elif get_supabase() is None:
+                st.info("Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets to save audits and generate shareable links.")
+            elif _save_err:
+                st.warning(f"Audit completed but could not be saved to history — DB error: {_save_err}")
 
     with tab_audit:
         # ══════════════════════════════════════════════════════════════════════
@@ -1500,6 +1915,63 @@ if run_audit or "_audit" in st.session_state:
         # ══════════════════════════════════════════════════════════════════════
 
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
+
+        # ── ANTI-BOT PROTECTION CALLOUT ───────────────────────────────────────
+        _antibot_urls = [
+            u for u in all_test_urls
+            if js_results.get(u, {}).get("error") and any(
+                x in str(js_results[u].get("error", "")).lower()
+                for x in ("403", "blocked", "cloudflare", "challenge", "forbidden")
+            )
+        ]
+        _antibot_schema = [
+            u for u in all_test_urls
+            if schema_results.get(u, {}).get("error") and any(
+                x in str(schema_results[u].get("error", "")).lower()
+                for x in ("403", "blocked", "cloudflare", "challenge", "forbidden")
+            )
+        ]
+        _cf_detected = robots_result.get("cloudflare", {}).get("cloudflare_detected", False)
+        _cf_blocking = robots_result.get("cloudflare", {}).get("bot_fight_mode_likely", False)
+        _bots_blocked = robots_result.get("cloudflare", {}).get("blocked_bots", [])
+        _all_bots_blocked = bot_crawl_results and all(not r.get("is_allowed") for r in bot_crawl_results.values())
+
+        if _cf_blocking or _antibot_urls or _antibot_schema or _all_bots_blocked:
+            _blocked_pages = list(dict.fromkeys([url_labels.get(u, u) for u in _antibot_urls + _antibot_schema]))
+            _bot_list = ", ".join(_bots_blocked) if _bots_blocked else ("All tested bots" if _all_bots_blocked else "")
+            _detail_parts = []
+            if _cf_blocking:
+                _detail_parts.append(f"Cloudflare Bot Fight Mode is actively blocking AI crawlers ({_bot_list})")
+            if _blocked_pages:
+                _detail_parts.append(f"Crawl failed on: {', '.join(_blocked_pages)}")
+            if _all_bots_blocked and not _cf_blocking:
+                _detail_parts.append("All AI bots were blocked in the live crawl test")
+            _detail_html = " · ".join(_detail_parts)
+            st.markdown(
+                f'<div style="background:#ff4b4b18;border:1px solid #ff4b4b55;border-left:4px solid #ff4b4b;border-radius:0 10px 10px 0;padding:16px 20px;margin:12px 0;">'
+                f'<div style="font-size:14px;font-weight:700;color:#ff4b4b;margin-bottom:6px;">🛡️ Anti-Bot Protection Detected — Results May Be Incomplete</div>'
+                f'<div style="font-size:13px;color:{BRAND["white"]};line-height:1.6;">{_detail_html}</div>'
+                f'<div style="font-size:12px;color:{BRAND["text_secondary"]};margin-top:8px;">Scores for affected pages are based on what our crawlers could access. Manual verification is recommended. Security section will still show exposure data collected before the block.</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        elif _cf_detected:
+            st.markdown(
+                f'<div style="background:{BRAND["warning"]}18;border:1px solid {BRAND["warning"]}55;border-left:4px solid {BRAND["warning"]};border-radius:0 10px 10px 0;padding:12px 18px;margin:12px 0;">'
+                f'<div style="font-size:13px;font-weight:600;color:{BRAND["warning"]};">⚠️ Cloudflare detected on this site — monitor bot access settings to ensure AI crawlers are not blocked</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        # ── NO-BLOG NOTICE ─────────────────────────────────────────────────────
+        if no_blog:
+            st.markdown(
+                f'<div style="background:{BRAND["warning"]}15;border:1px solid {BRAND["warning"]}44;border-left:4px solid {BRAND["warning"]};border-radius:0 10px 10px 0;padding:12px 18px;margin:12px 0;">'
+                f'<div style="font-size:13px;font-weight:600;color:{BRAND["warning"]};">📝 No editorial blog — 10pt schema penalty applied</div>'
+                f'<div style="font-size:12px;color:{BRAND["text_secondary"]};margin-top:4px;">Content pages (About/Contact/Story) evaluated against appropriate schema expectations. Editorial content significantly improves AI discoverability and citation potential.</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
         # ── GAUGE + SCORE CARDS ───────────────────────────────────────────────
         col_gauge, col_pillars = st.columns([1, 2])
@@ -1805,7 +2277,14 @@ if run_audit or "_audit" in st.session_state:
                     desc_len = meta_data.get("desc_len", len(desc))
                     st.markdown(brand_status(f"Description ({desc_len} chars)", "success" if 100 <= desc_len <= 160 else "warning" if desc else "danger"), unsafe_allow_html=True)
                     canon = meta_data.get("canonical", "")
-                    st.markdown(brand_status(f"Canonical: {canon[:80] or 'Missing'}", "success" if canon else "warning"), unsafe_allow_html=True)
+                    if not canon:
+                        st.markdown(brand_status("Canonical: Missing", "warning"), unsafe_allow_html=True)
+                    elif meta_data.get("canonical_matches_url"):
+                        st.markdown(brand_status(f"Canonical: Matching — {canon[:80]}", "success"), unsafe_allow_html=True)
+                    else:
+                        st.markdown(brand_status(f"Canonical: Not matching — {canon[:80]}", "danger"), unsafe_allow_html=True)
+                    if meta_data.get("was_redirected"):
+                        st.markdown(brand_status(f"Redirect detected — fetched URL: {meta_data.get('final_url', '')[:80]}", "warning"), unsafe_allow_html=True)
                     og = meta_data.get("og_tags", {})
                     st.markdown(brand_status(f"OG tags: {len(og)}", "success" if len(og) >= 3 else "warning"), unsafe_allow_html=True)
 
@@ -2103,6 +2582,10 @@ if run_audit or "_audit" in st.session_state:
                 if critical_exposed:
                     recs.append(("warning", "Robots.txt", f"Sensitive paths have no Disallow rule in robots.txt: {', '.join(critical_exposed[:4])}. These paths aren't necessarily accessible — but adding explicit Disallow rules is best practice to prevent accidental AI bot indexing."))
 
+        # ── No editorial blog ─────────────────────────────────────────────────────
+        if no_blog:
+            recs.append(("warning", "Editorial Content", "No blog or editorial content pages were audited. AI systems like Perplexity, ChatGPT, and Claude preferentially cite and surface brands with regular editorial content. Consider creating a blog, resource hub, or thought-leadership section — even 4–6 quality posts significantly improves AI citation potential."))
+
         # ── Schema ────────────────────────────────────────────────────────────────
         if schema_score < 30:
             recs.append(("danger", "Schema", "Add JSON-LD schema: Organisation + WebSite + BreadcrumbList site-wide. Product + Offer + AggregateRating on product pages. This is your highest-leverage AI visibility action."))
@@ -2231,26 +2714,70 @@ if run_audit or "_audit" in st.session_state:
         domain_slug = parsed.netloc.replace(".", "_")
         date_slug   = time.strftime("%Y%m%d")
 
-        dl_col1, dl_col2 = st.columns(2)
+        report_pdf = generate_report_pdf(
+            parsed.netloc, overall, pillar_scores_dict, url_labels,
+            js_results, llm_result, robots_result, schema_results,
+            semantic_results, bot_crawl_results, recs,
+        )
+        report_json = json.dumps({
+            "domain":        parsed.netloc,
+            "overall_score": overall,
+            "overall_grade": overall_grade,
+            "generated_at":  time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "pillar_scores": pillar_scores_dict,
+            "urls":          url_labels,
+            "recommendations": [{"severity": s, "pillar": p, "text": t} for s, p, t in recs],
+            "js_results":        js_results,
+            "robots_result":     robots_result,
+            "schema_results":    schema_results,
+            "llm_result":        llm_result,
+            "semantic_results":  semantic_results,
+            "security_result":   security_result,
+            "bot_crawl_results": bot_crawl_results,
+        }, indent=2)
+
+        dl_col1, dl_col2, dl_col3, dl_col4 = st.columns(4)
         with dl_col1:
             st.download_button(
-                label="⬇ Download Offline PDF Report (HTML)",
+                label="⬇ PDF Report",
+                data=report_pdf,
+                file_name=f"llm_access_audit_{domain_slug}_{date_slug}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary",
+                key="dl_pdf",
+            )
+            st.caption("Formatted PDF — scores, tables, recommendations.")
+        with dl_col2:
+            st.download_button(
+                label="⬇ HTML Report",
                 data=report_html,
                 file_name=f"llm_access_audit_{domain_slug}_{date_slug}.html",
                 mime="text/html",
                 use_container_width=True,
-                type="primary",
+                key="dl_html",
             )
-            st.caption("Opens in browser — use Ctrl/Cmd+P to save as PDF. All sections expanded.")
-        with dl_col2:
+            st.caption("Opens in browser — Ctrl/Cmd+P to print.")
+        with dl_col3:
             st.download_button(
-                label="⬇ Download Plain Text Report (.txt)",
+                label="⬇ Plain Text",
                 data=report_text,
                 file_name=f"llm_access_audit_{domain_slug}_{date_slug}.txt",
                 mime="text/plain",
                 use_container_width=True,
+                key="dl_txt",
             )
-            st.caption("Plain text — open in any editor.")
+            st.caption("Open in any editor or import to Notion.")
+        with dl_col4:
+            st.download_button(
+                label="⬇ JSON Data",
+                data=report_json,
+                file_name=f"llm_access_audit_{domain_slug}_{date_slug}.json",
+                mime="application/json",
+                use_container_width=True,
+                key="dl_json",
+            )
+            st.caption("Raw scores + full results for integrations.")
 
         # ── FOOTER ────────────────────────────────────────────────────────────
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
