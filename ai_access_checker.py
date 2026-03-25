@@ -1259,6 +1259,13 @@ if st.session_state.get("_bulk_rerun_queue") or st.session_state.get("_bulk_reru
     _bq_total = _bq_prog.get("total", 1)
     st.info(f"🔄 Bulk rerun in progress — {_bq_done}/{_bq_total} complete. Do not close this tab.")
 
+# Apply any pending prefill values BEFORE widgets are rendered
+_PREFILL_KEYS = ["home", "cat1", "cat2", "blog1", "blog2", "prod1", "prod2", "no_blog", "run_bot_crawl"]
+for _pk in _PREFILL_KEYS:
+    _pfk = f"_prefill_{_pk}"
+    if _pfk in st.session_state:
+        st.session_state[_pk] = st.session_state.pop(_pfk)
+
 tab_audit, tab_history = st.tabs(["\U0001f50d  New Audit", "\U0001f4cb  Past Audits"])
 with tab_audit:
     # ── INPUT: Mandatory URL structure ────────────────────────────────────────────
@@ -1445,14 +1452,14 @@ with tab_history:
                         st.rerun()
                 with _rerun_col:
                     if _has_full and st.button("🔄", key=f"rerun_{_audit_id}", help="Rerun this audit with fresh checks", use_container_width=True):
-                        # Pre-populate form inputs via widget session-state keys
+                        # Pre-populate form inputs via prefill keys (applied before widgets render)
                         _inv = {v: k for k, v in (_fr.get("url_labels") or {}).items()}
                         for _lbl, _widget_key in _LABEL_TO_KEY.items():
                             if _lbl in _inv:
-                                st.session_state[_widget_key] = _inv[_lbl]
+                                st.session_state[f"_prefill_{_widget_key}"] = _inv[_lbl]
                         # Restore Advanced Options flags
-                        st.session_state["no_blog"]       = bool(_fr.get("no_blog", False))
-                        st.session_state["run_bot_crawl"] = bool(_fr.get("bot_crawl_results"))
+                        st.session_state["_prefill_no_blog"]       = bool(_fr.get("no_blog", False))
+                        st.session_state["_prefill_run_bot_crawl"] = bool(_fr.get("bot_crawl_results"))
                         # Clear any previously cached result so a fresh audit runs
                         st.session_state.pop("_audit", None)
                         st.session_state.pop("_loaded_audit_id", None)
