@@ -719,7 +719,7 @@ def check_js_rendering(url, get_secret, page_type="general"):
 #   Backend paths accessible (/api, /graphql, /wp-json):    -15 each, max -30
 #   Customer paths accessible (/account, /checkout, /cart): -10 each, max -20
 #   robots.txt explicitly allows sensitive paths to AI bots: -15
-#   Sensitive paths with no robots.txt Disallow rule:        -10
+#   Sensitive paths with no robots.txt Disallow rule:        -5 each, max -25
 #   Sensitive content in raw HTML without auth:              -10
 #   CSS/JS blocked (prevents AI from understanding site):   noted separately
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -808,7 +808,8 @@ def check_security_exposure(base_url, robots_raw: str = "", homepage_html: str =
                        if not r.get("blocked", not r.get("accessible_per_robots", False))]
         if no_disallow:
             findings["no_disallow"] = no_disallow
-            sb.deduct(10, f"{len(no_disallow)} sensitive path(s) have no Disallow rule in robots.txt — AI bots are not instructed to avoid them", "no_disallow")
+            _no_disallow_deduction = min(len(no_disallow) * 5, 25)
+            sb.deduct(_no_disallow_deduction, f"{len(no_disallow)} sensitive path(s) have no Disallow rule in robots.txt (-5 each, max -25)", "no_disallow")
 
     # ── 5. Sensitive HTML content exposed without authentication ─────────────
     if homepage_html:
