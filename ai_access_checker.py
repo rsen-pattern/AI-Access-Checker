@@ -1777,7 +1777,25 @@ if run_audit or "_audit" in st.session_state:
             base_url,
             robots_raw=robots_result.get("raw", ""),
             homepage_html=homepage_html,
+            sensitive_paths=robots_result.get("sensitive_paths", {}),
         )
+        # Apply robots.txt Disallow coverage deduction inline (ai_access_checker.py
+        # is re-executed on every Streamlit rerun; checks.py is only loaded once).
+        _sensitive = robots_result.get("sensitive_paths", {})
+        _no_disallow = [p for p, r in _sensitive.items()
+                        if not r.get("blocked", not r.get("accessible_per_robots", False))]
+        if _no_disallow:
+            _deduction = min(len(_no_disallow) * 5, 25)
+            _base_score = security_result.get("score", 100)
+            _new_score = max(0, _base_score - _deduction)
+            security_result["score"] = _new_score
+            security_result.setdefault("findings", {})["no_disallow"] = _no_disallow
+            security_result.setdefault("items", []).append({
+                "label": f"{len(_no_disallow)} sensitive path(s) have no Disallow rule in robots.txt (−5 each, max −25)",
+                "points": -_deduction,
+                "status": "fail",
+                "category": "no_disallow",
+            })
         security_score = security_result.get("score", 100)
 
         # ── LIVE BOT CRAWL (homepage) ─────────────────────────────────────────
