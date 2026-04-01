@@ -146,40 +146,9 @@ AI_BOTS = {
 
 BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-SENSITIVE_PATHS = [
-    "/admin", "/administrator", "/wp-admin", "/wp-login.php",
-    "/account", "/my-account", "/user", "/profile",
-    "/checkout", "/cart", "/payment",
-    "/api", "/api/v1", "/graphql",
-    "/staging", "/preview", "/dev", "/test",
-    "/cms", "/backend", "/dashboard", "/panel",
-    "/config", "/env", "/.env", "/debug",
-    "/phpmyadmin", "/adminer", "/database",
-]
-
-EXPECTED_SCHEMA_TYPES = {
-    "site_wide": ["Organization", "WebSite", "WebPage", "BreadcrumbList"],
-    "product": ["Product", "Offer", "Brand", "AggregateRating", "Review"],
-    "article": ["Article", "NewsArticle", "BlogPosting"],
-    "faq": ["FAQPage", "Question", "Answer"],
-    "local": ["LocalBusiness", "Store", "Place"],
-    "collection": ["ItemList", "CollectionPage", "ProductCollection"],
-}
-
-SCHEMA_KEY_FIELDS = {
-    "Product": ["name", "description", "image", "sku", "brand", "offers"],
-    "Offer": ["price", "priceCurrency", "availability", "url"],
-    "Organization": ["name", "url", "logo", "contactPoint"],
-    "WebSite": ["name", "url", "potentialAction"],
-    "BreadcrumbList": ["itemListElement"],
-    "FAQPage": ["mainEntity"],
-    "Article": ["headline", "author", "datePublished", "image"],
-    "BlogPosting": ["headline", "author", "datePublished", "image"],
-    "AggregateRating": ["ratingValue", "reviewCount"],
-    "Review": ["author", "reviewRating", "reviewBody"],
-    "LocalBusiness": ["name", "address", "telephone", "openingHours"],
-    "ItemList": ["itemListElement", "numberOfItems"],
-}
+# NOTE: SENSITIVE_PATHS, EXPECTED_SCHEMA_TYPES, SCHEMA_KEY_FIELDS, AI_BOTS,
+# fetch, and normalise_url are all imported from checks.py (single source of
+# truth) — see the import block below the helper functions.
 
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -474,13 +443,11 @@ def check_semantic_hierarchy(url):
     resp, err = fetch(url)
     if err or not resp or resp.status_code != 200:
         return {"error": err or f"HTTP {resp.status_code if resp else '?'}"}
-    from bs4 import BeautifulSoup
-    import re as _re
     soup = BeautifulSoup(resp.text, "html.parser")
     results = {"headings": [], "hierarchy_ok": True, "semantic_elements": {},
                "meta_tags": [], "x_robots_tag": None, "nosnippet_elements": 0,
                "html_length": len(resp.text), "text_length": 0}
-    headings = soup.find_all(_re.compile(r'^h[1-6]$'))
+    headings = soup.find_all(re.compile(r'^h[1-6]$'))
     for h in headings:
         results["headings"].append({"level": int(h.name[1]), "text": h.get_text(strip=True)[:120]})
     levels = [int(h.name[1]) for h in headings]
@@ -972,16 +939,17 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
     from reportlab.lib.enums import TA_CENTER, TA_LEFT
     import io as _io
 
-    _C_BG      = HexColor("#0A0A0F")
-    _C_CARD    = HexColor("#13131A")
-    _C_BORDER  = HexColor("#2A2A3A")
-    _C_WHITE   = HexColor("#FFFFFF")
-    _C_MUTED   = HexColor("#8B8BA0")
-    _C_PRIMARY = HexColor("#6C63FF")
-    _C_TEAL    = HexColor("#00E5CC")
-    _C_WARN    = HexColor("#FFB547")
-    _C_DANGER  = HexColor("#FF4757")
-    _C_SUCCESS = HexColor("#2ECC71")
+    _C_BG      = HexColor("#090A0F")
+    _C_CARD    = HexColor("#12131A")
+    _C_BORDER  = HexColor("#2A2B36")
+    _C_WHITE   = HexColor("#FCFCFC")
+    _C_MUTED   = HexColor("#B3B3B3")
+    _C_PRIMARY = HexColor("#009BFF")
+    _C_PURPLE  = HexColor("#770BFF")
+    _C_TEAL    = HexColor("#4CC3AE")
+    _C_WARN    = HexColor("#FFB548")
+    _C_DANGER  = HexColor("#E53E51")
+    _C_SUCCESS = HexColor("#4CC3AE")
 
     buf = _io.BytesIO()
     doc = SimpleDocTemplate(
@@ -1005,9 +973,18 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
     S_OK    = _style("OK",    fontSize=9,  textColor=_C_SUCCESS, spaceAfter=2,  fontName="Helvetica-Bold")
 
     def _score_color(sc):
-        if sc >= 80: return _C_SUCCESS
-        if sc >= 55: return _C_WARN
+        if sc >= 75: return _C_TEAL
+        if sc >= 50: return _C_PRIMARY
+        if sc >= 35: return _C_WARN
         return _C_DANGER
+
+    def _grade(sc):
+        for threshold, (letter, label) in sorted(
+            {90: ("A", "Excellent"), 75: ("B", "Good"), 60: ("C", "Fair"),
+             40: ("D", "Needs Work"), 0: ("F", "Critical")}.items(), reverse=True):
+            if sc >= threshold:
+                return letter, label
+        return "F", "Critical"
 
     def _hr():
         return HRFlowable(width="100%", thickness=1, color=_C_BORDER, spaceAfter=6, spaceBefore=6)
@@ -1032,13 +1009,12 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
     # Pillar score table
     _pillar_data = [["Pillar", "Score", "Grade"]]
     for pname, psc in pillar_scores.items():
-        if psc >= 80:   grade, color = "Good",  _C_SUCCESS
-        elif psc >= 55: grade, color = "Fair",  _C_WARN
-        else:           grade, color = "Poor",  _C_DANGER
+        g_letter, g_label = _grade(psc)
+        color = _score_color(psc)
         _pillar_data.append([
             Paragraph(pname, _style("pt", fontSize=9, textColor=_C_WHITE, fontName="Helvetica")),
             Paragraph(f"{psc}%", _style("ps", fontSize=9, textColor=color, fontName="Helvetica-Bold")),
-            Paragraph(grade,     _style("pg", fontSize=9, textColor=color, fontName="Helvetica")),
+            Paragraph(f"{g_letter} — {g_label}", _style("pg", fontSize=9, textColor=color, fontName="Helvetica")),
         ])
     _pt = Table(_pillar_data, colWidths=["60%", "20%", "20%"])
     _pt.setStyle(TableStyle([
@@ -1059,17 +1035,29 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
     # ── Per-page summary table ────────────────────────────────────────────────
     story.append(Paragraph("Per-Page Results", S_H2))
     story.append(_sp(4))
-    _pp_data = [["Page", "URL", "JS", "Schema"]]
+    _pp_data = [["Page", "URL", "JS", "Schema", "Semantic"]]
     for url_key, label in url_labels.items():
         _js_s  = js_results.get(url_key, {}).get("score", "—")
         _sc_s  = schema_results.get(url_key, {}).get("score", "—")
+        _sem_r = semantic_results.get(url_key, {})
+        _sem_s = "—"
+        if not _sem_r.get("error") and _sem_r:
+            _ps = 100
+            if not _sem_r.get("hierarchy_ok", True):              _ps -= 30
+            if not _sem_r.get("semantic_elements"):               _ps -= 20
+            _hl = _sem_r.get("html_length", 0)
+            _tl = _sem_r.get("text_length", 0)
+            if _hl > 0 and (_tl / _hl * 100) < 15:            _ps -= 20
+            if _sem_r.get("nosnippet_elements", 0) > 5:           _ps -= 10
+            _sem_s = max(0, _ps)
         _pp_data.append([
             Paragraph(label,   _style("pl", fontSize=8, textColor=_C_WHITE,   fontName="Helvetica")),
             Paragraph(url_key, _style("pu", fontSize=7, textColor=_C_MUTED,   fontName="Helvetica")),
             Paragraph(str(_js_s), _style("pj", fontSize=8, textColor=_score_color(_js_s) if isinstance(_js_s, int) else _C_MUTED, fontName="Helvetica-Bold")),
             Paragraph(str(_sc_s), _style("pk", fontSize=8, textColor=_score_color(_sc_s) if isinstance(_sc_s, int) else _C_MUTED, fontName="Helvetica-Bold")),
+            Paragraph(str(_sem_s), _style("pm", fontSize=8, textColor=_score_color(_sem_s) if isinstance(_sem_s, int) else _C_MUTED, fontName="Helvetica-Bold")),
         ])
-    _ppt = Table(_pp_data, colWidths=["18%", "52%", "15%", "15%"])
+    _ppt = Table(_pp_data, colWidths=["16%", "44%", "13%", "13%", "14%"])
     _ppt.setStyle(TableStyle([
         ("BACKGROUND",  (0, 0), (-1, 0),  _C_PRIMARY),
         ("TEXTCOLOR",   (0, 0), (-1, 0),  white),
@@ -1085,35 +1073,87 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
     story.append(_sp(8))
     story.append(_hr())
 
-    # ── Recommendations ───────────────────────────────────────────────────────
-    story.append(Paragraph("Priority Recommendations", S_H2))
+    # ── Pillar 1: JS Rendering (per-page detail) ─────────────────────────────
+    story.append(Paragraph("Pillar 1 — JavaScript Rendering", S_H2))
+    story.append(Paragraph(f"PAGE-LEVEL · Checked on each of your {len(js_results)} pages", S_MUTED))
     story.append(_sp(4))
-    for i, (status, pillar, text) in enumerate(recs, 1):
-        sty = S_CRIT if status == "danger" else S_WARN
-        icon = "CRITICAL" if status == "danger" else "WARNING"
-        story.append(Paragraph(f"{i}. [{icon} — {pillar}] {text}", sty))
-        story.append(_sp(2))
+    for test_url, js_r in js_results.items():
+        lbl = url_labels.get(test_url, test_url)
+        if js_r.get("error"):
+            story.append(Paragraph(f"{lbl}: ERROR — {js_r['error']}", S_CRIT))
+            story.append(_sp(2))
+            continue
+        score = js_r.get("score", 0)
+        story.append(Paragraph(f"{lbl} — {score}/100", _style("jh", fontSize=10, textColor=_score_color(score), fontName="Helvetica-Bold")))
+        comp = js_r.get("comparison")
+        if comp:
+            _js_rows = [["Content", "HTML (Crawler)", "JS (Browser)", "Impact"]]
+            for c in comp.get("comparison", []):
+                if not c.get("name"):
+                    continue
+                status_label = "MISSING" if c["status"] == "missing" else "MINOR GAP" if c["status"] == "warn" else "OK"
+                s_color = _C_DANGER if c["status"] == "missing" else _C_WARN if c["status"] == "warn" else _C_TEAL
+                _js_rows.append([
+                    Paragraph(c["name"], _style("jn", fontSize=8, textColor=_C_WHITE, fontName="Helvetica")),
+                    Paragraph(str(c["html_val"]), _style("jh2", fontSize=8, textColor=s_color, fontName="Helvetica")),
+                    Paragraph(str(c["js_val"]), _style("jj2", fontSize=8, textColor=_C_TEAL, fontName="Helvetica")),
+                    Paragraph(status_label, _style("ji", fontSize=8, textColor=s_color, fontName="Helvetica-Bold")),
+                ])
+            if len(_js_rows) > 1:
+                _jst = Table(_js_rows, colWidths=["30%", "20%", "20%", "30%"])
+                _jst.setStyle(TableStyle([
+                    ("BACKGROUND", (0,0), (-1,0), _C_PRIMARY),
+                    ("TEXTCOLOR",  (0,0), (-1,0), white),
+                    ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+                    ("FONTSIZE",   (0,0), (-1,0), 8),
+                    ("ROWBACKGROUNDS", (0,1), (-1,-1), [_C_BG, _C_CARD]),
+                    ("GRID",       (0,0), (-1,-1), 0.5, _C_BORDER),
+                    ("LEFTPADDING",(0,0), (-1,-1), 6),
+                    ("TOPPADDING", (0,0), (-1,-1), 3),
+                    ("BOTTOMPADDING",(0,0),(-1,-1),3),
+                ]))
+                story.append(_jst)
+            html_t = comp.get("html_summary", {}).get("text_content_length", 0)
+            js_t = comp.get("js_summary", {}).get("text_content_length", 0)
+            if js_t > html_t:
+                pct = round(html_t / max(js_t, 1) * 100)
+                pct_c = _C_DANGER if pct < 30 else _C_WARN if pct < 70 else _C_TEAL
+                story.append(Paragraph(f"Content Visibility: {pct}% — HTML: {html_t:,} chars · JS: {js_t:,} chars · Hidden: {js_t-html_t:,} chars",
+                    _style("cv", fontSize=8, textColor=pct_c, fontName="Helvetica-Bold")))
+        elif js_r.get("risk_factors"):
+            for rf in js_r["risk_factors"]:
+                story.append(Paragraph(f"  ⚠ {rf}", S_WARN))
+        if js_r.get("frameworks"):
+            for fname, sev, note in js_r["frameworks"]:
+                sty = S_CRIT if sev == "high" else S_WARN
+                story.append(Paragraph(f"  {fname} ({sev}) — {note}", sty))
+        story.append(_sp(4))
     story.append(_hr())
 
-    # ── Robots.txt summary ────────────────────────────────────────────────────
-    story.append(Paragraph("Robots & Crawlability", S_H2))
+    # ── Pillar 2: Robots & Crawlability ───────────────────────────────────────
+    story.append(Paragraph("Pillar 2 — Robots &amp; Crawlability", S_H2))
+    story.append(Paragraph("SITE-LEVEL · Controls all crawler access", S_MUTED))
     story.append(_sp(3))
     if robots_result.get("found"):
         story.append(Paragraph(f"robots.txt: Found  |  Sitemaps: {len(robots_result.get('sitemaps', []))}", S_BODY))
         _blocked = robots_result.get("blocked_resources", [])
-        story.append(Paragraph(f"Blocked resources: {', '.join(_blocked) if _blocked else 'None'}", S_BODY))
+        if _blocked:
+            story.append(Paragraph(f"Blocked resources: {', '.join(_blocked)}", S_CRIT))
+        else:
+            story.append(Paragraph("CSS/JS not blocked — AI agents can render pages", S_OK))
         _ai_results = robots_result.get("ai_agent_results", robots_result.get("ai_results", {}))
         if _ai_results:
-            _ai_rows = [["Bot", "Status"]]
+            _ai_rows = [["Bot", "Company", "Status"]]
             for bn, info in _ai_results.items():
                 _av = info.get("robots_allowed", info.get("allowed"))
                 _as = "Allowed" if _av is True else "Blocked" if _av is False else "Unknown"
                 _ac = _C_SUCCESS if _av is True else _C_DANGER if _av is False else _C_MUTED
                 _ai_rows.append([
                     Paragraph(bn,  _style("ab", fontSize=8, textColor=_C_WHITE, fontName="Helvetica")),
+                    Paragraph(info.get("company", ""), _style("ac", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")),
                     Paragraph(_as, _style("as", fontSize=8, textColor=_ac,      fontName="Helvetica-Bold")),
                 ])
-            _ait = Table(_ai_rows, colWidths=["70%", "30%"])
+            _ait = Table(_ai_rows, colWidths=["40%", "30%", "30%"])
             _ait.setStyle(TableStyle([
                 ("BACKGROUND", (0,0), (-1,0), _C_PRIMARY),
                 ("TEXTCOLOR",  (0,0), (-1,0), white),
@@ -1126,14 +1166,173 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
                 ("BOTTOMPADDING",(0,0),(-1,-1),3),
             ]))
             story.append(_ait)
+        # Sensitive paths summary
+        _sensitive = robots_result.get("sensitive_paths", {})
+        _exposed = [p for p, r in _sensitive.items() if not r.get("blocked", not r.get("accessible_per_robots", False))]
+        _blocked_paths = [p for p, r in _sensitive.items() if r.get("blocked", not r.get("accessible_per_robots", True))]
+        if _exposed:
+            story.append(_sp(4))
+            story.append(Paragraph(f"Sensitive paths with no Disallow rule: {len(_exposed)}", S_WARN))
+            for p in _exposed[:10]:
+                story.append(Paragraph(f"  {p}", _style("sp", fontSize=8, textColor=_C_WARN, fontName="Helvetica")))
+        if _blocked_paths:
+            story.append(Paragraph(f"Sensitive paths blocked: {len(_blocked_paths)}", S_OK))
     else:
         story.append(Paragraph("robots.txt: NOT FOUND", S_CRIT))
     story.append(_sp(8))
     story.append(_hr())
 
+    # ── Pillar 3: Schema & Entity (per-page detail) ──────────────────────────
+    story.append(Paragraph("Pillar 3 — Schema &amp; Entity", S_H2))
+    story.append(Paragraph(f"PAGE-LEVEL · Checked on each of your {len(schema_results)} pages", S_MUTED))
+    story.append(_sp(4))
+    for test_url, sr in schema_results.items():
+        lbl = url_labels.get(test_url, test_url)
+        if sr.get("error"):
+            story.append(Paragraph(f"{lbl}: ERROR", S_CRIT))
+            story.append(_sp(2))
+            continue
+        schema_data = sr.get("schema", {})
+        types = schema_data.get("types", [])
+        validations = schema_data.get("validations", [])
+        sc = sr.get("score", 0)
+        g2 = sr.get("grade", {})
+        gl = g2.get("letter", "?") if isinstance(g2, dict) else "?"
+        story.append(Paragraph(f"{lbl} — {sc}/100 ({gl})", _style("sh", fontSize=10, textColor=_score_color(sc), fontName="Helvetica-Bold")))
+        if types:
+            story.append(Paragraph(f"Types: {', '.join(types)}", S_BODY))
+        ess_found = schema_data.get("essential_found", [])
+        ess_missing = schema_data.get("essential_missing", [])
+        if ess_found:
+            story.append(Paragraph(f"Essential found: {', '.join(ess_found)}", S_OK))
+        if ess_missing:
+            story.append(Paragraph(f"Essential missing: {', '.join(ess_missing)}", S_WARN))
+        for v in validations:
+            comp2 = v.get("completeness", 0)
+            sty = S_OK if comp2 >= 80 else S_WARN if comp2 >= 50 else S_CRIT
+            missing_str = f" — Missing: {', '.join(v['missing'])}" if v.get('missing') else ""
+            story.append(Paragraph(f"  {v.get('type', '?')}: {comp2}% complete{missing_str}", sty))
+        meta_data = sr.get("meta", {})
+        if meta_data:
+            title = meta_data.get("title", "")
+            desc_len = meta_data.get("desc_len", 0)
+            story.append(Paragraph(f"Title ({len(title)} chars): {title[:60]}", S_BODY))
+            story.append(Paragraph(f"Meta description: {desc_len} chars", S_BODY))
+        story.append(_sp(4))
+    story.append(_hr())
+
+    # ── Pillar 4: AI Discoverability ──────────────────────────────────────────
+    story.append(Paragraph("Pillar 4 — AI Discoverability", S_H2))
+    story.append(Paragraph("SITE-LEVEL · llm.txt files + AI Info Page + well-known files", S_MUTED))
+    story.append(_sp(3))
+    llm_txt_data = llm_result.get("llm_txt", llm_result.get("files", {}))
+    story.append(Paragraph("llm.txt Files:", _style("lt", fontSize=10, textColor=_C_WHITE, fontName="Helvetica-Bold")))
+    for path, info in llm_txt_data.items():
+        if info.get("found"):
+            story.append(Paragraph(f"  Found: {path}", S_OK))
+            q = info.get("quality", {})
+            if q:
+                story.append(Paragraph(f"    Lines: {q.get('line_count', q.get('lines', '—'))} · Chars: {q.get('char_count', q.get('chars', '—'))} · Links: {'Yes' if q.get('has_links') else 'No'}", S_BODY))
+        else:
+            story.append(Paragraph(f"  Not found: {path}", _style("lm", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
+    ai_info = llm_result.get("ai_info_page", {})
+    story.append(_sp(3))
+    story.append(Paragraph("AI Info Page:", _style("ai", fontSize=10, textColor=_C_WHITE, fontName="Helvetica-Bold")))
+    if ai_info.get("found"):
+        story.append(Paragraph(f"  Found: {ai_info.get('url', '')}", S_OK))
+        story.append(Paragraph(f"  Linked from footer: {'Yes' if ai_info.get('linked_from_footer') else 'No'}", S_OK if ai_info.get("linked_from_footer") else S_CRIT))
+        if "indexable" in ai_info:
+            story.append(Paragraph(f"  Indexable: {'Yes' if ai_info['indexable'] else 'No — has noindex'}", S_OK if ai_info.get("indexable") else S_CRIT))
+    else:
+        if ai_info.get("redirects"):
+            story.append(Paragraph("  AI Info Page URL redirects elsewhere — page does not exist", S_CRIT))
+        else:
+            story.append(Paragraph("  No AI Info Page found", S_WARN))
+    wellknown = llm_result.get("wellknown", {})
+    if wellknown:
+        story.append(_sp(3))
+        story.append(Paragraph("AI Policy Files (/.well-known/):", _style("wk", fontSize=10, textColor=_C_WHITE, fontName="Helvetica-Bold")))
+        for path, info in wellknown.items():
+            if info.get("found"):
+                story.append(Paragraph(f"  Found: {path}", S_OK))
+            else:
+                story.append(Paragraph(f"  Not found: {path}", _style("wm", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
+    story.append(_sp(8))
+    story.append(_hr())
+
+    # ── Semantic Hierarchy (per-page detail) ──────────────────────────────────
+    story.append(Paragraph("Semantic Hierarchy &amp; Content Structure", S_H2))
+    story.append(Paragraph(f"PAGE-LEVEL · Checked on each of your {len(semantic_results)} pages", S_MUTED))
+    story.append(_sp(4))
+    for test_url, sem_r in semantic_results.items():
+        lbl = url_labels.get(test_url, test_url)
+        if sem_r.get("error"):
+            story.append(Paragraph(f"{lbl}: ERROR", S_CRIT))
+            story.append(_sp(2))
+            continue
+        story.append(Paragraph(lbl, _style("sl", fontSize=10, textColor=_C_WHITE, fontName="Helvetica-Bold")))
+        hier_ok = sem_r.get("hierarchy_ok", True)
+        story.append(Paragraph(f"  Heading hierarchy: {'Valid — no skipped levels' if hier_ok else 'Issues — skipped levels detected'}", S_OK if hier_ok else S_WARN))
+        sem_elems = sem_r.get("semantic_elements", {})
+        if sem_elems:
+            tags_str = ", ".join(f"<{tag}>: {count}" for tag, count in sem_elems.items())
+            story.append(Paragraph(f"  Semantic elements: {tags_str}", S_OK))
+        else:
+            story.append(Paragraph("  No semantic HTML5 elements found", S_WARN))
+        html_len = sem_r.get("html_length", 0)
+        text_len = sem_r.get("text_length", 0)
+        if html_len > 0:
+            ratio = text_len / html_len * 100
+            story.append(Paragraph(f"  Text-to-HTML ratio: {ratio:.1f}%", S_OK if ratio >= 15 else S_WARN))
+        nosnip = sem_r.get("nosnippet_elements", 0)
+        if nosnip:
+            story.append(Paragraph(f"  data-nosnippet: {nosnip} element(s)", S_BODY))
+        story.append(_sp(3))
+    story.append(_hr())
+
+    # ── Security & Exposure ───────────────────────────────────────────────────
+    story.append(Paragraph("Security &amp; Exposure", S_H2))
+    story.append(Paragraph("SITE-LEVEL · Sensitive path probing", S_MUTED))
+    story.append(_sp(3))
+    sec_findings = security_result.get("findings", {}) if isinstance(security_result, dict) else {}
+    sec_total_exposed = security_result.get("total_exposed", 0) if isinstance(security_result, dict) else 0
+    if sec_total_exposed == 0 and not sec_findings.get("html_exposure") and not sec_findings.get("robots_allowlist"):
+        story.append(Paragraph("No sensitive paths accessible to AI bots — all probed paths returned 403/404/401", S_OK))
+    else:
+        for cat, label_str, sty in [
+            ("critical", "Critical paths (admin/env/config)", S_CRIT),
+            ("backend", "Backend paths (API/GraphQL)", S_WARN),
+            ("customer", "Customer paths (account/checkout)", S_WARN),
+        ]:
+            items = sec_findings.get(cat, [])
+            if items:
+                story.append(Paragraph(f"{label_str} — accessible to AI bots:", sty))
+                for f in items:
+                    story.append(Paragraph(f"  {f['path']} — HTTP {f['status']} ({f['size']:,} bytes)", sty))
+        if sec_findings.get("html_exposure"):
+            story.append(Paragraph("Sensitive content in HTML source:", S_WARN))
+            for item in sec_findings["html_exposure"]:
+                story.append(Paragraph(f"  {item}", S_WARN))
+    story.append(_sp(8))
+    story.append(_hr())
+
+    # ── Recommendations ───────────────────────────────────────────────────────
+    story.append(Paragraph("Priority Recommendations", S_H2))
+    story.append(_sp(4))
+    for i, (status, pillar, text) in enumerate(recs, 1):
+        sty = S_CRIT if status == "danger" else S_WARN
+        icon = "CRITICAL" if status == "danger" else "WARNING"
+        story.append(Paragraph(f"{i}. [{icon} — {pillar}] {text}", sty))
+        story.append(_sp(2))
+    story.append(_hr())
+
     # ── Bot crawl results ─────────────────────────────────────────────────────
     if bot_crawl_results:
         story.append(Paragraph("Live Bot Crawl Results", S_H2))
+        story.append(_sp(3))
+        _allowed_n = sum(1 for r in bot_crawl_results.values() if r.get("is_allowed"))
+        _total_n = len(bot_crawl_results)
+        story.append(Paragraph(f"{_allowed_n} allowed · {_total_n - _allowed_n} blocked · {_total_n} total", S_BODY))
         story.append(_sp(3))
         _bc_rows = [["Bot", "Company", "Status", "HTTP", "Load Time"]]
         for bn, r in bot_crawl_results.items():
@@ -1709,7 +1908,7 @@ if run_audit or "_audit" in st.session_state:
         progress = st.progress(0, text=f"Starting audit — estimated {time_label}…")
 
         # ── PILLAR 1: JS RENDERING (all pages — parallelized) ────────────────
-        progress.progress(3, text=f"[1/6] JS Rendering — checking {n_pages} pages… (est. {js_label.split('(')[0].strip()})")
+        progress.progress(3, text=f"[1/7] JS Rendering — checking {n_pages} pages… (est. {js_label.split('(')[0].strip()})")
         js_results = {}
         with ThreadPoolExecutor(max_workers=3) as _pool:
             _futs = {_pool.submit(check_js_rendering, u, get_secret, url_page_types.get(u, "general")): u for u in all_test_urls}
@@ -1721,15 +1920,15 @@ if run_audit or "_audit" in st.session_state:
                     js_results[_u] = {"score": 0, "error": "timeout/crash"}
                 elapsed = round(time.time() - audit_start)
                 progress.progress(3 + round(14 * (_done_count / n_pages)),
-                    text=f"[1/6] JS Rendering — {_done_count}/{n_pages} done · {elapsed}s elapsed")
+                    text=f"[1/7] JS Rendering — {_done_count}/{n_pages} done · {elapsed}s elapsed")
         js_score = round(sum(r.get("score", 0) for r in js_results.values()) / len(js_results))
 
         # ── PILLAR 2: ROBOTS & CRAWLABILITY (site-level) ──────────────────────
         elapsed = round(time.time() - audit_start)
-        progress.progress(18, text=f"[2/6] Robots & Crawlability — fetching robots.txt + Cloudflare check… · {elapsed}s elapsed")
+        progress.progress(18, text=f"[2/7] Robots & Crawlability — fetching robots.txt + Cloudflare check… · {elapsed}s elapsed")
         homepage_resp, _ = fetch(url)
         homepage_html = homepage_resp.text if homepage_resp else ""
-        progress.progress(20, text=f"[2/6] Robots & Crawlability — running 16 live bot crawl tests… · {elapsed}s elapsed")
+        progress.progress(20, text=f"[2/7] Robots & Crawlability — running 16 live bot crawl tests… · {elapsed}s elapsed")
         robots_result = check_robots_crawlability(base_url, homepage_html)
         robots_score = robots_result.get("score", 0)
 
@@ -1745,7 +1944,7 @@ if run_audit or "_audit" in st.session_state:
                     schema_results[_u] = {"score": 0, "error": "timeout/crash"}
                 elapsed = round(time.time() - audit_start)
                 progress.progress(38 + round(14 * (_done_count / n_pages)),
-                    text=f"[3/6] Schema & Entity — {_done_count}/{n_pages} done · {elapsed}s elapsed")
+                    text=f"[3/7] Schema & Entity — {_done_count}/{n_pages} done · {elapsed}s elapsed")
         schema_score = round(sum(r.get("score", 0) for r in schema_results.values()) / len(schema_results))
 
         # ── PILLAR 4: AI DISCOVERABILITY (site-level) ──────────────────────────
@@ -1816,9 +2015,7 @@ if run_audit or "_audit" in st.session_state:
         overall_grade = overall_result["grade"]
 
         total_elapsed = round(time.time() - audit_start)
-        time.sleep(0.3)
         progress.progress(100, text=f"Audit complete in {total_elapsed}s!")
-        time.sleep(0.5)
         progress.empty()
         # ── Save results to session state so they survive reruns ──────────
         st.session_state["_audit"] = {
@@ -2093,14 +2290,14 @@ if run_audit or "_audit" in st.session_state:
                 ("Robots & Crawl", robots_score),
                 ("Schema & Entity", schema_score),
                 ("AI Discovery", llm_score),
+                ("Semantic", semantic_score),
+                ("Security", security_score),
             ]
-            p_cols = st.columns(5)
+            p_cols = st.columns(6)
             for i, (label, sc) in enumerate(pillar_items):
                 color = BRAND["teal"] if sc >= 75 else BRAND["primary"] if sc >= 50 else BRAND["warning"] if sc >= 35 else BRAND["danger"]
-                p_cols[i].markdown(f'<div class="p-score-card"><div class="p-score-num" style="color:{color};font-size:1.6rem;">{sc}<span style="font-size:12px;opacity:0.4;">%</span></div><div class="p-score-label" style="font-size:0.6rem;">{label}</div></div>', unsafe_allow_html=True)
-            # Security as separate card
-            sec_color = BRAND["teal"] if security_score >= 80 else BRAND["warning"] if security_score >= 50 else BRAND["danger"]
-            p_cols[4].markdown(f'<div class="p-score-card" style="border-color:{sec_color}40;"><div class="p-score-num" style="color:{sec_color};font-size:1.6rem;">{security_score}<span style="font-size:12px;opacity:0.4;">%</span></div><div class="p-score-label" style="font-size:0.6rem;">Security</div></div>', unsafe_allow_html=True)
+                border_extra = f"border-color:{color}40;" if label == "Security" else ""
+                p_cols[i].markdown(f'<div class="p-score-card" style="{border_extra}"><div class="p-score-num" style="color:{color};font-size:1.6rem;">{sc}<span style="font-size:12px;opacity:0.4;">%</span></div><div class="p-score-label" style="font-size:0.6rem;">{label}</div></div>', unsafe_allow_html=True)
 
             # Summary row
             st.markdown("")
@@ -2147,9 +2344,24 @@ if run_audit or "_audit" in st.session_state:
             label = url_labels.get(test_url, test_url)
             js_s = js_results.get(test_url, {}).get("score", "—")
             sc_s = schema_results.get(test_url, {}).get("score", "—")
-            js_color = BRAND["teal"] if isinstance(js_s, int) and js_s >= 70 else BRAND["warning"] if isinstance(js_s, int) and js_s >= 40 else BRAND["danger"]
-            sc_color = BRAND["teal"] if isinstance(sc_s, int) and sc_s >= 70 else BRAND["warning"] if isinstance(sc_s, int) and sc_s >= 40 else BRAND["danger"]
-            st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid {BRAND["border"]};"><div style="color:{BRAND["white"]};font-size:13px;"><strong>{label}</strong> — <span style="color:{BRAND["text_secondary"]};font-size:12px;">{test_url}</span></div><div style="display:flex;gap:16px;"><span style="color:{js_color};font-weight:700;">JS: {js_s}</span><span style="color:{sc_color};font-weight:700;">Schema: {sc_s}</span></div></div>', unsafe_allow_html=True)
+            # Compute semantic score for this page
+            _sr = semantic_results.get(test_url, {})
+            sem_s = "—"
+            if _sr and not _sr.get("error"):
+                _ps = 100
+                if not _sr.get("hierarchy_ok", True):              _ps -= 30
+                if not _sr.get("semantic_elements"):               _ps -= 20
+                _hl = _sr.get("html_length", 0)
+                _tl = _sr.get("text_length", 0)
+                if _hl > 0 and (_tl / _hl * 100) < 15:            _ps -= 20
+                if _sr.get("nosnippet_elements", 0) > 5:           _ps -= 10
+                sem_s = max(0, _ps)
+            def _row_color(s):
+                return BRAND["teal"] if isinstance(s, int) and s >= 70 else BRAND["warning"] if isinstance(s, int) and s >= 40 else BRAND["danger"]
+            js_color = _row_color(js_s)
+            sc_color = _row_color(sc_s)
+            sem_color = _row_color(sem_s)
+            st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid {BRAND["border"]};"><div style="color:{BRAND["white"]};font-size:13px;"><strong>{label}</strong> — <span style="color:{BRAND["text_secondary"]};font-size:12px;">{test_url}</span></div><div style="display:flex;gap:16px;"><span style="color:{js_color};font-weight:700;">JS: {js_s}</span><span style="color:{sc_color};font-weight:700;">Schema: {sc_s}</span><span style="color:{sem_color};font-weight:700;">Semantic: {sem_s}</span></div></div>', unsafe_allow_html=True)
 
         # ══════════════════════════════════════════════════════════════════════
         # PILLAR 1: JS RENDERING
@@ -2473,6 +2685,16 @@ if run_audit or "_audit" in st.session_state:
                 st.markdown(brand_status("No AI Info Page found at /ai-info, /llm-info, or similar", "warning"), unsafe_allow_html=True)
             st.info("💡 Create an **AI Info Page** at `/ai-info` — your brand's official fact sheet for AI. Include brand basics, key products, FAQs, and a 'Last Updated' date. Link it from your footer. Keep it simple HTML.")
 
+        # Well-known AI files (site-level)
+        wellknown_result = llm_result.get("wellknown", {})
+        if wellknown_result:
+            st.markdown(f'<div style="margin:16px 0 8px 0;">{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="font-weight:600;color:{BRAND["white"]};">AI Policy Files (/.well-known/):</span></div>', unsafe_allow_html=True)
+            for path, info in wellknown_result.items():
+                if info.get("found"):
+                    st.markdown(brand_status(f"Found: {path}", "success"), unsafe_allow_html=True)
+                else:
+                    st.caption(f"— {path} not found")
+
         # ScoreBuilder rubric
         llm_items = llm_result.get("items", [])
         if llm_items:
@@ -2574,15 +2796,6 @@ if run_audit or "_audit" in st.session_state:
                 if sem_ai:
                     st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
                     st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{sem_ai}</div>', unsafe_allow_html=True)
-
-        # Well-known AI files (site-level)
-        st.markdown(f'<div style="margin:16px 0 8px 0;">{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="font-weight:600;color:{BRAND["white"]};">AI Policy Files:</span></div>', unsafe_allow_html=True)
-        wellknown_result = llm_result.get("wellknown", {})
-        for path, info in wellknown_result.items():
-            if info.get("found"):
-                st.markdown(brand_status(f"Found: {path}", "success"), unsafe_allow_html=True)
-            else:
-                st.caption(f"— {path} not found")
 
         # ══════════════════════════════════════════════════════════════════════
         # SECURITY DRILLDOWN
