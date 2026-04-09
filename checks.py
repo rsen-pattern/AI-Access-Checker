@@ -802,15 +802,6 @@ def check_security_exposure(base_url, robots_raw: str = "", homepage_html: str =
             findings["robots_allowlist"] = ai_agent_blocks
             sb.deduct(15, f"robots.txt explicitly allows {len(ai_agent_blocks)} sensitive path(s) for AI bots", "robots_allowlist")
 
-    # ── 4b. Sensitive paths with no Disallow rule in robots.txt ─────────────
-    if sensitive_paths:
-        no_disallow = [p for p, r in sensitive_paths.items()
-                       if not r.get("blocked", not r.get("accessible_per_robots", False))]
-        if no_disallow:
-            findings["no_disallow"] = no_disallow
-            _no_disallow_deduction = min(len(no_disallow) * 5, 25)
-            sb.deduct(_no_disallow_deduction, f"{len(no_disallow)} sensitive path(s) have no Disallow rule in robots.txt (-5 each, max -25)", "no_disallow")
-
     # ── 5. Sensitive HTML content exposed without authentication ─────────────
     if homepage_html:
         soup = BeautifulSoup(homepage_html, "html.parser")
