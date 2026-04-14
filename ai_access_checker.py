@@ -2446,39 +2446,6 @@ if run_audit or "_audit" in st.session_state:
                 if not schemas:
                     st.markdown(brand_status("No Schema.org structured data found on this page", "warning"), unsafe_allow_html=True)
 
-                # Content Structure (heading hierarchy + semantic HTML)
-                _cs_r = semantic_results.get(test_url, {})
-                if not _cs_r.get("error"):
-                    with st.expander("Content Structure — headings & semantic HTML"):
-                        _cs_cols = st.columns(2)
-                        with _cs_cols[0]:
-                            st.markdown("**Heading Hierarchy:**")
-                            _cs_headings = _cs_r.get("headings", [])
-                            if _cs_headings:
-                                _cs_ok = _cs_r.get("hierarchy_ok", True)
-                                st.markdown(brand_status(
-                                    "Valid — no skipped levels" if _cs_ok else "Issues — skipped heading levels detected",
-                                    "success" if _cs_ok else "warning"
-                                ), unsafe_allow_html=True)
-                                for _h in _cs_headings[:20]:
-                                    _indent = "&nbsp;" * (_h["level"] - 1) * 4
-                                    st.markdown(f'<div style="color:{BRAND["text_secondary"]};font-size:12px;line-height:1.7;">{_indent}H{_h["level"]}: {_h["text"][:80]}</div>', unsafe_allow_html=True)
-                            else:
-                                st.markdown(brand_status("No headings found on this page", "danger"), unsafe_allow_html=True)
-                        with _cs_cols[1]:
-                            st.markdown("**Semantic HTML5 Elements:**")
-                            _cs_sem = _cs_r.get("semantic_elements", {})
-                            if _cs_sem:
-                                for _tag, _cnt in _cs_sem.items():
-                                    st.markdown(brand_status(f"<{_tag}>: {_cnt}", "success"), unsafe_allow_html=True)
-                            else:
-                                st.markdown(brand_status("No semantic HTML5 elements found", "warning"), unsafe_allow_html=True)
-                            _cs_html_len = _cs_r.get("html_length", 0)
-                            _cs_text_len = _cs_r.get("text_length", 0)
-                            if _cs_html_len > 0:
-                                _cs_ratio = _cs_text_len / _cs_html_len * 100
-                                st.markdown(brand_status(f"Text-to-HTML ratio: {_cs_ratio:.1f}%", "success" if _cs_ratio >= 15 else "warning"), unsafe_allow_html=True)
-
                 # AI Analysis — What This Means
                 try:
                     schema_ai = analyse_schema_quality(test_url, schemas, get_secret)
@@ -2493,7 +2460,7 @@ if run_audit or "_audit" in st.session_state:
         # ══════════════════════════════════════════════════════════════════════
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
         st.markdown(pillar_header(4, "AI Discoverability", llm_score), unsafe_allow_html=True)
-        st.markdown(f'{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">llm.txt files + AI Info Page</span>', unsafe_allow_html=True)
+        st.markdown(f'{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">llm.txt · AI Info Page · AI Policy Files</span> &nbsp; {brand_pill("PAGE-LEVEL", BRAND["primary"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">Content structure — heading hierarchy, semantic HTML</span>', unsafe_allow_html=True)
         st.markdown(brand_score_bar(llm_score), unsafe_allow_html=True)
         pillar_explainer("llm_txt")
 
@@ -2575,6 +2542,72 @@ if run_audit or "_audit" in st.session_state:
                     st.markdown(brand_status(f"Not found: {_wk_path}", "info"), unsafe_allow_html=True)
                 if _wk_note:
                     st.caption(_wk_note)
+
+        # ── Content Structure (per-page) ──────────────────────────────────────
+        # Heading hierarchy, semantic HTML, and content density tell AI agents
+        # how to parse and prioritise your pages. Shown per page so you can
+        # compare templates side-by-side.
+        _cs_valid = {u: r for u, r in semantic_results.items() if not r.get("error")}
+        if _cs_valid:
+            st.markdown(f'<div style="font-weight:600;color:{BRAND["white"]};margin:20px 0 6px 0;">Content Structure — per page:</div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="font-size:12px;color:{BRAND["text_secondary"]};margin-bottom:10px;">Heading hierarchy · semantic HTML5 elements · content density — AI agents parse these signals to decide what to cite</div>', unsafe_allow_html=True)
+            for _cs_url, _cs_r in semantic_results.items():
+                if _cs_r.get("error"):
+                    continue
+                _cs_label = url_labels.get(_cs_url, _cs_url)
+                _cs_ok = _cs_r.get("hierarchy_ok", True)
+                _cs_headings = _cs_r.get("headings", [])
+                _cs_sem = _cs_r.get("semantic_elements", {})
+                _cs_html_len = _cs_r.get("html_length", 0)
+                _cs_text_len = _cs_r.get("text_length", 0)
+                _cs_ratio = (_cs_text_len / _cs_html_len * 100) if _cs_html_len > 0 else 0
+                # Build a one-line summary for the expander title
+                _cs_issues = []
+                if not _cs_ok:
+                    _cs_issues.append("skipped heading levels")
+                if not _cs_headings:
+                    _cs_issues.append("no headings")
+                if not _cs_sem:
+                    _cs_issues.append("no semantic HTML")
+                if _cs_ratio < 15 and _cs_html_len > 0:
+                    _cs_issues.append(f"low content density ({_cs_ratio:.0f}%)")
+                _cs_badge = f" — {', '.join(_cs_issues)}" if _cs_issues else " — structure looks good"
+                with st.expander(f"{_cs_label}{_cs_badge}"):
+                    _cs_cols = st.columns(2)
+                    with _cs_cols[0]:
+                        st.markdown("**Heading Hierarchy:**")
+                        if _cs_headings:
+                            st.markdown(brand_status(
+                                "Valid — no skipped levels" if _cs_ok else "Issues — skipped heading levels detected",
+                                "success" if _cs_ok else "warning"
+                            ), unsafe_allow_html=True)
+                            for _h in _cs_headings[:20]:
+                                _indent = "&nbsp;" * (_h["level"] - 1) * 4
+                                st.markdown(f'<div style="color:{BRAND["text_secondary"]};font-size:12px;line-height:1.7;">{_indent}H{_h["level"]}: {_h["text"][:80]}</div>', unsafe_allow_html=True)
+                        else:
+                            st.markdown(brand_status("No headings found — AI has no structural signal to guide reading", "danger"), unsafe_allow_html=True)
+                    with _cs_cols[1]:
+                        st.markdown("**Semantic HTML5 Elements:**")
+                        if _cs_sem:
+                            for _stag, _scnt in _cs_sem.items():
+                                st.markdown(brand_status(f"<{_stag}>: {_scnt}", "success"), unsafe_allow_html=True)
+                        else:
+                            st.markdown(brand_status("No semantic elements — use <article>, <section>, <nav> to signal structure", "warning"), unsafe_allow_html=True)
+                        if _cs_html_len > 0:
+                            st.markdown(brand_status(
+                                f"Content density: {_cs_ratio:.1f}% of page is readable text",
+                                "success" if _cs_ratio >= 15 else "warning"
+                            ), unsafe_allow_html=True)
+                            if _cs_ratio < 15:
+                                st.caption("Low density — heavy markup relative to text. AI may deprioritise this page.")
+                    # AI analysis for this page
+                    try:
+                        _cs_ai = analyse_semantic_hierarchy(_cs_url, _cs_r, _cs_label, get_secret)
+                    except Exception:
+                        _cs_ai = None
+                    if _cs_ai:
+                        st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:14px;margin:14px 0 6px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:12px 16px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{_cs_ai}</div>', unsafe_allow_html=True)
 
         # ══════════════════════════════════════════════════════════════════════
         # LIVE BOT CRAWL
