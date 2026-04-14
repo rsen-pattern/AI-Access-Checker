@@ -2,8 +2,8 @@
 """
 Pattern LLM Access Checker — Full LLM Access Audit
 Branded with Pattern design system.
-4 Pillars: JavaScript Rendering · LLM.txt · Robots.txt · Schema
-Plus: Live Bot Crawl, Sensitive Path Scan, Semantic Hierarchy Checks
+4 Pillars: JavaScript Rendering · Robots & Crawlability · Schema & Entity · AI Discoverability
+Plus: Security Score · Live Bot Crawl
 """
 
 import streamlit as st
@@ -1381,8 +1381,8 @@ with tab_history:
             with _count_col:
                 st.markdown(f'<div style="padding:8px 0;color:{BRAND["text_secondary"]};font-size:13px;">{len(_rows)} audit{"s" if len(_rows) != 1 else ""} · sorted newest first</div>', unsafe_allow_html=True)
 
-            _PILLARS = ["JS Rendering", "Robots & Crawl", "Schema & Entity", "AI Discoverability", "Semantic Hierarchy", "Security"]
-            _P_SHORT  = ["JS", "Robots", "Schema", "AI", "Semantic", "Security"]
+            _PILLARS = ["JS Rendering", "Robots & Crawl", "Schema & Entity", "AI Discoverability", "Security"]
+            _P_SHORT  = ["JS", "Robots", "Schema", "AI", "Security"]
 
             def _hsc(s):
                 return BRAND["teal"] if s >= 75 else BRAND["warning"] if s >= 50 else BRAND["danger"]
@@ -2123,7 +2123,6 @@ if run_audit or "_audit" in st.session_state:
             "Robots & Crawl":     robots_score,
             "Schema & Entity":    schema_score,
             "AI Discoverability": llm_score,
-            "Semantic Hierarchy": semantic_score,
             "Security":           security_score,
         }
         sorted_pillars = sorted(pillar_scores.items(), key=lambda x: x[1])
@@ -2315,6 +2314,40 @@ if run_audit or "_audit" in st.session_state:
             st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
             st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{robots_ai}</div>', unsafe_allow_html=True)
 
+        # Per-page meta directives (crawl directives embedded in each page)
+        _sem_valid = {u: r for u, r in semantic_results.items() if not r.get("error")}
+        if _sem_valid:
+            st.markdown(f'<div style="font-weight:600;color:{BRAND["white"]};margin:16px 0 6px 0;">Per-Page Meta Directives:</div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="font-size:12px;color:{BRAND["text_secondary"]};margin-bottom:8px;">robots meta tags · X-Robots-Tag header · data-nosnippet elements — checked per page</div>', unsafe_allow_html=True)
+            for _pd_url, _pd_r in semantic_results.items():
+                if _pd_r.get("error"):
+                    continue
+                _pd_label = url_labels.get(_pd_url, _pd_url)
+                _pd_meta = _pd_r.get("meta_tags", [])
+                _pd_xrobot = _pd_r.get("x_robots_tag")
+                _pd_nosnip = _pd_r.get("nosnippet_elements", 0)
+                _pd_issues = []
+                if any("noindex" in t.get("content", "").lower() for t in _pd_meta):
+                    _pd_issues.append("noindex")
+                if any("nosnippet" in t.get("content", "").lower() for t in _pd_meta):
+                    _pd_issues.append("nosnippet in meta")
+                if _pd_nosnip:
+                    _pd_issues.append(f"{_pd_nosnip} data-nosnippet element(s)")
+                _pd_badge = f" — {', '.join(_pd_issues)}" if _pd_issues else " — no restrictive directives"
+                with st.expander(f"{_pd_label}{_pd_badge}"):
+                    if _pd_meta:
+                        for _tag in _pd_meta:
+                            _has_issue = any(w in _tag.get("content", "").lower() for w in ("noindex", "nosnippet", "noimageindex"))
+                            st.markdown(brand_status(f'meta {_tag["name"]}: {_tag["content"]}', "warning" if _has_issue else "info"), unsafe_allow_html=True)
+                    else:
+                        st.caption("No robots meta tags on this page")
+                    if _pd_xrobot:
+                        _xr_issue = any(w in _pd_xrobot.lower() for w in ("noindex", "nosnippet"))
+                        st.markdown(brand_status(f"X-Robots-Tag: {_pd_xrobot}", "warning" if _xr_issue else "info"), unsafe_allow_html=True)
+                    else:
+                        st.caption("No X-Robots-Tag header")
+                    st.markdown(brand_status(f"data-nosnippet elements: {_pd_nosnip}", "warning" if _pd_nosnip > 0 else "info"), unsafe_allow_html=True)
+
         # ══════════════════════════════════════════════════════════════════════
         # PILLAR 3: SCHEMA & ENTITY (page-level)
         # ══════════════════════════════════════════════════════════════════════
@@ -2413,6 +2446,39 @@ if run_audit or "_audit" in st.session_state:
                 if not schemas:
                     st.markdown(brand_status("No Schema.org structured data found on this page", "warning"), unsafe_allow_html=True)
 
+                # Content Structure (heading hierarchy + semantic HTML)
+                _cs_r = semantic_results.get(test_url, {})
+                if not _cs_r.get("error"):
+                    with st.expander("Content Structure — headings & semantic HTML"):
+                        _cs_cols = st.columns(2)
+                        with _cs_cols[0]:
+                            st.markdown("**Heading Hierarchy:**")
+                            _cs_headings = _cs_r.get("headings", [])
+                            if _cs_headings:
+                                _cs_ok = _cs_r.get("hierarchy_ok", True)
+                                st.markdown(brand_status(
+                                    "Valid — no skipped levels" if _cs_ok else "Issues — skipped heading levels detected",
+                                    "success" if _cs_ok else "warning"
+                                ), unsafe_allow_html=True)
+                                for _h in _cs_headings[:20]:
+                                    _indent = "&nbsp;" * (_h["level"] - 1) * 4
+                                    st.markdown(f'<div style="color:{BRAND["text_secondary"]};font-size:12px;line-height:1.7;">{_indent}H{_h["level"]}: {_h["text"][:80]}</div>', unsafe_allow_html=True)
+                            else:
+                                st.markdown(brand_status("No headings found on this page", "danger"), unsafe_allow_html=True)
+                        with _cs_cols[1]:
+                            st.markdown("**Semantic HTML5 Elements:**")
+                            _cs_sem = _cs_r.get("semantic_elements", {})
+                            if _cs_sem:
+                                for _tag, _cnt in _cs_sem.items():
+                                    st.markdown(brand_status(f"<{_tag}>: {_cnt}", "success"), unsafe_allow_html=True)
+                            else:
+                                st.markdown(brand_status("No semantic HTML5 elements found", "warning"), unsafe_allow_html=True)
+                            _cs_html_len = _cs_r.get("html_length", 0)
+                            _cs_text_len = _cs_r.get("text_length", 0)
+                            if _cs_html_len > 0:
+                                _cs_ratio = _cs_text_len / _cs_html_len * 100
+                                st.markdown(brand_status(f"Text-to-HTML ratio: {_cs_ratio:.1f}%", "success" if _cs_ratio >= 15 else "warning"), unsafe_allow_html=True)
+
                 # AI Analysis — What This Means
                 try:
                     schema_ai = analyse_schema_quality(test_url, schemas, get_secret)
@@ -2492,6 +2558,24 @@ if run_audit or "_audit" in st.session_state:
             st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
             st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{llm_ai}</div>', unsafe_allow_html=True)
 
+        # AI Policy Files (/.well-known/)
+        _wk_result = llm_result.get("wellknown", {})
+        if _wk_result:
+            st.markdown(f'<div style="font-weight:600;color:{BRAND["white"]};margin:16px 0 6px 0;">AI Policy Files (/.well-known/):</div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="font-size:12px;color:{BRAND["text_secondary"]};margin-bottom:8px;">Emerging AI agent interoperability standards — informational, not scored</div>', unsafe_allow_html=True)
+            for _wk_path, _wk_info in _wk_result.items():
+                _wk_status = _wk_info.get("status", "")
+                _wk_desc = _wk_info.get("description", "")
+                _wk_note = _wk_info.get("note", "")
+                if _wk_info.get("found"):
+                    st.markdown(brand_status(f"Found: {_wk_path} — {_wk_desc.split('—')[0].strip()}", "success"), unsafe_allow_html=True)
+                elif _wk_status == "deprecated":
+                    st.markdown(brand_status(f"{_wk_path} — deprecated, do not implement", "info"), unsafe_allow_html=True)
+                else:
+                    st.markdown(brand_status(f"Not found: {_wk_path}", "info"), unsafe_allow_html=True)
+                if _wk_note:
+                    st.caption(_wk_note)
+
         # ══════════════════════════════════════════════════════════════════════
         # LIVE BOT CRAWL
         # ══════════════════════════════════════════════════════════════════════
@@ -2515,80 +2599,10 @@ if run_audit or "_audit" in st.session_state:
                             st.caption(f"HTTP {r['status_code']} · Robots: {'✓' if r['robots_allowed'] else '✗'} · Meta: {r['robots_meta']} · {r['content_length']:,} chars · {r['load_time']}s")
 
         # ══════════════════════════════════════════════════════════════════════
-        # SEMANTIC HIERARCHY & OTHER CHECKS (replaces Supplementary)
-        # ══════════════════════════════════════════════════════════════════════
-        st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
-        st.markdown(pillar_header(5, "Semantic Hierarchy & Content Structure", semantic_score), unsafe_allow_html=True)
-        st.markdown(f'{brand_pill("PAGE-LEVEL", BRAND["primary"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">Heading structure, semantic HTML, meta directives — checked per page</span>', unsafe_allow_html=True)
-        st.markdown(brand_score_bar(semantic_score), unsafe_allow_html=True)
-        pillar_explainer("semantic_content")
-
-        for test_url, sem_r in semantic_results.items():
-            label = url_labels.get(test_url, test_url)
-            if sem_r.get("error"):
-                st.error(f"Could not check {label}: {sem_r['error']}")
-                continue
-
-            with st.expander(f"{label}"):
-                col_left, col_right = st.columns(2)
-
-                with col_left:
-                    st.markdown("**Heading Hierarchy:**")
-                    if sem_r["headings"]:
-                        hierarchy_status = "success" if sem_r["hierarchy_ok"] else "warning"
-                        st.markdown(brand_status(f"Hierarchy: {'Valid — no skipped levels' if sem_r['hierarchy_ok'] else 'Issues — skipped heading levels detected'}", hierarchy_status), unsafe_allow_html=True)
-                        for h in sem_r["headings"][:20]:
-                            indent = "&nbsp;" * (h["level"] - 1) * 4
-                            st.markdown(f'<div style="color:{BRAND["text_secondary"]};font-size:12px;">{indent}H{h["level"]}: {h["text"][:80]}</div>', unsafe_allow_html=True)
-                    else:
-                        st.markdown(brand_status("No headings found", "danger"), unsafe_allow_html=True)
-
-                    st.markdown("**Semantic Elements:**")
-                    if sem_r["semantic_elements"]:
-                        for tag, count in sem_r["semantic_elements"].items():
-                            st.markdown(brand_status(f"<{tag}>: {count}", "success"), unsafe_allow_html=True)
-                    else:
-                        st.markdown(brand_status("No semantic HTML5 elements found", "warning"), unsafe_allow_html=True)
-
-                with col_right:
-                    st.markdown("**Meta Directives:**")
-                    if sem_r["meta_tags"]:
-                        for tag in sem_r["meta_tags"]:
-                            st.markdown(brand_status(f'{tag["name"]}: {tag["content"]}', "info"), unsafe_allow_html=True)
-                    else:
-                        st.caption("No robots meta tags")
-                    if sem_r.get("x_robots_tag"):
-                        st.markdown(brand_status(f"X-Robots-Tag: {sem_r['x_robots_tag']}", "info"), unsafe_allow_html=True)
-                    st.markdown(brand_status(f"data-nosnippet: {sem_r.get('nosnippet_elements', 0)} element(s)", "info"), unsafe_allow_html=True)
-                    html_len = sem_r.get("html_length", 0)
-                    text_len = sem_r.get("text_length", 0)
-                    if html_len > 0:
-                        ratio = text_len / html_len * 100
-                        st.markdown(brand_status(f"Text-to-HTML ratio: {ratio:.1f}%", "success" if ratio >= 15 else "warning"), unsafe_allow_html=True)
-
-                # AI Analysis — What This Means
-                try:
-                    sem_ai = analyse_semantic_hierarchy(test_url, sem_r, label, get_secret)
-                except Exception:
-                    sem_ai = None
-                if sem_ai:
-                    st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
-                    st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{sem_ai}</div>', unsafe_allow_html=True)
-
-        # Well-known AI files (site-level)
-        st.markdown(f'<div style="margin:16px 0 8px 0;">{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="font-weight:600;color:{BRAND["white"]};">AI Policy Files:</span></div>', unsafe_allow_html=True)
-        wellknown_result = llm_result.get("wellknown", {})
-        for path, info in wellknown_result.items():
-            if info.get("found"):
-                st.markdown(brand_status(f"Found: {path}", "success"), unsafe_allow_html=True)
-            else:
-                st.caption(f"— {path} not found")
-
-        # ══════════════════════════════════════════════════════════════════════
         # SECURITY DRILLDOWN
         # ══════════════════════════════════════════════════════════════════════
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
-        st.markdown(pillar_header(6, "Security & Exposure", security_score), unsafe_allow_html=True)
+        st.markdown(pillar_header(5, "Security & Exposure", security_score), unsafe_allow_html=True)
         st.markdown(f'{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="color:{BRAND["text_secondary"]};font-size:12px;">Sensitive path probing — checked once against your live site</span>', unsafe_allow_html=True)
         st.markdown(brand_score_bar(security_score), unsafe_allow_html=True)
         sec_findings = security_result.get("findings", {})
@@ -2801,7 +2815,6 @@ if run_audit or "_audit" in st.session_state:
             "Robots & Crawl":     robots_score,
             "Schema & Entity":    schema_score,
             "AI Discoverability": llm_score,
-            "Semantic Hierarchy": semantic_score,
             "Security":           security_score,
         }
         report_text = generate_report_text(
