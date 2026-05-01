@@ -1905,6 +1905,7 @@ if run_audit or "_audit" in st.session_state:
             "overall_grade":     overall_grade,
             "overall_result":    overall_result,
             "no_blog":           no_blog,
+            "pattern_brain":     None,  # populated after Pattern Brain renders below
         }
         _pillar_scores_payload = {
             "JS Rendering":       js_score,
@@ -2222,6 +2223,7 @@ if run_audit or "_audit" in st.session_state:
                         ai_analysis = ai_analyse_js_gap(test_url, comp, label, get_secret)
                     except Exception:
                         ai_analysis = None
+                    st.session_state["_audit"].setdefault("_bifrost_js", {})[test_url] = ai_analysis
                     if ai_analysis:
                         st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
                         st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{ai_analysis}</div>', unsafe_allow_html=True)
@@ -2311,6 +2313,7 @@ if run_audit or "_audit" in st.session_state:
             robots_ai = analyse_robots_access(parsed.netloc, robots_result, get_secret)
         except Exception:
             robots_ai = None
+        st.session_state["_audit"]["_bifrost_robots"] = robots_ai
         if robots_ai:
             st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
             st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{robots_ai}</div>', unsafe_allow_html=True)
@@ -2418,6 +2421,7 @@ if run_audit or "_audit" in st.session_state:
                     schema_ai = analyse_schema_quality(test_url, schemas, get_secret)
                 except Exception:
                     schema_ai = None
+                st.session_state["_audit"].setdefault("_bifrost_schema", {})[test_url] = schema_ai
                 if schema_ai:
                     st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
                     st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{schema_ai}</div>', unsafe_allow_html=True)
@@ -2488,6 +2492,7 @@ if run_audit or "_audit" in st.session_state:
             llm_ai = analyse_llm_discoverability(parsed.netloc, llm_result, get_secret)
         except Exception:
             llm_ai = None
+        st.session_state["_audit"]["_bifrost_llm"] = llm_ai
         if llm_ai:
             st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
             st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{llm_ai}</div>', unsafe_allow_html=True)
@@ -2571,6 +2576,7 @@ if run_audit or "_audit" in st.session_state:
                     sem_ai = analyse_semantic_hierarchy(test_url, sem_r, label, get_secret)
                 except Exception:
                     sem_ai = None
+                st.session_state["_audit"].setdefault("_bifrost_sem", {})[test_url] = sem_ai
                 if sem_ai:
                     st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
                     st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{sem_ai}</div>', unsafe_allow_html=True)
@@ -2784,6 +2790,7 @@ if run_audit or "_audit" in st.session_state:
                     brain_analysis = pattern_brain_analysis(parsed.netloc, all_results_for_brain, get_secret)
                 except Exception:
                     brain_analysis = None
+                st.session_state["_audit"]["pattern_brain"] = brain_analysis
 
             if brain_analysis:
                 st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:12px;padding:20px 24px;margin:8px 0;"><div style="color:{BRAND["white"]};font-size:14px;line-height:1.7;">{_md_to_html(brain_analysis)}</div></div>', unsafe_allow_html=True)
