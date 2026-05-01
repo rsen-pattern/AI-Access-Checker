@@ -1123,16 +1123,28 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
     from reportlab.lib.enums import TA_CENTER, TA_LEFT
     import io as _io
 
-    _C_BG      = HexColor("#0A0A0F")
-    _C_CARD    = HexColor("#13131A")
-    _C_BORDER  = HexColor("#2A2A3A")
-    _C_WHITE   = HexColor("#FFFFFF")
-    _C_MUTED   = HexColor("#8B8BA0")
-    _C_PRIMARY = HexColor("#6C63FF")
-    _C_TEAL    = HexColor("#00E5CC")
-    _C_WARN    = HexColor("#FFB547")
-    _C_DANGER  = HexColor("#FF4757")
-    _C_SUCCESS = HexColor("#2ECC71")
+    # Use BRAND palette throughout (no separate hardcoded palette)
+    _C_BG      = HexColor(BRAND["bg_dark"])
+    _C_CARD    = HexColor(BRAND["bg_card"])
+    _C_BORDER  = HexColor(BRAND["border"])
+    _C_WHITE   = HexColor(BRAND["white"])
+    _C_MUTED   = HexColor(BRAND["text_secondary"])
+    _C_PRIMARY = HexColor(BRAND["primary"])
+    _C_PURPLE  = HexColor(BRAND["purple"])
+    _C_TEAL    = HexColor(BRAND["teal"])
+    _C_WARN    = HexColor(BRAND["warning"])
+    _C_DANGER  = HexColor(BRAND["danger"])
+    _C_SUCCESS = HexColor(BRAND["teal"])
+
+    _ss = st.session_state.get("_audit", {})
+    _bifrost_js     = _ss.get("_bifrost_js", {})
+    _bifrost_robots = _ss.get("_bifrost_robots")
+    _bifrost_schema = _ss.get("_bifrost_schema", {})
+    _bifrost_llm    = _ss.get("_bifrost_llm")
+    _bifrost_sem    = _ss.get("_bifrost_sem", {})
+    _brain          = _ss.get("pattern_brain")
+    _security       = _ss.get("security_result", {})
+    _no_blog        = _ss.get("no_blog", False)
 
     buf = _io.BytesIO()
     doc = SimpleDocTemplate(
@@ -1142,9 +1154,13 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
     )
 
     styles = getSampleStyleSheet()
+    _style_cache = {}
     def _style(name, **kw):
-        base = styles["Normal"]
-        return ParagraphStyle(name, parent=base, **kw)
+        key = name + str(sorted(kw.items()))
+        if key not in _style_cache:
+            base = styles["Normal"]
+            _style_cache[key] = ParagraphStyle(name + str(len(_style_cache)), parent=base, **kw)
+        return _style_cache[key]
 
     S_H1    = _style("H1",    fontSize=20, textColor=_C_WHITE,   spaceAfter=4,  fontName="Helvetica-Bold",  alignment=TA_CENTER)
     S_H2    = _style("H2",    fontSize=14, textColor=_C_WHITE,   spaceAfter=2,  fontName="Helvetica-Bold")
@@ -1154,10 +1170,12 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
     S_CRIT  = _style("CRIT",  fontSize=9,  textColor=_C_DANGER,  spaceAfter=2,  fontName="Helvetica-Bold")
     S_WARN  = _style("WARN",  fontSize=9,  textColor=_C_WARN,    spaceAfter=2,  fontName="Helvetica-Bold")
     S_OK    = _style("OK",    fontSize=9,  textColor=_C_SUCCESS, spaceAfter=2,  fontName="Helvetica-Bold")
+    S_AI    = _style("AI",    fontSize=8,  textColor=_C_MUTED,   spaceAfter=2,  fontName="Helvetica",       leading=12, leftIndent=8)
 
     def _score_color(sc):
-        if sc >= 80: return _C_SUCCESS
-        if sc >= 55: return _C_WARN
+        if sc >= 75: return _C_TEAL
+        if sc >= 50: return _C_PRIMARY
+        if sc >= 35: return _C_WARN
         return _C_DANGER
 
     def _hr():
@@ -1165,6 +1183,28 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
 
     def _sp(h=4):
         return Spacer(1, h)
+
+    def _table_style():
+        return TableStyle([
+            ("BACKGROUND",     (0,0), (-1,0),  _C_PRIMARY),
+            ("TEXTCOLOR",      (0,0), (-1,0),  white),
+            ("FONTNAME",       (0,0), (-1,0),  "Helvetica-Bold"),
+            ("FONTSIZE",       (0,0), (-1,0),  8),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [_C_BG, _C_CARD]),
+            ("GRID",           (0,0), (-1,-1), 0.5, _C_BORDER),
+            ("LEFTPADDING",    (0,0), (-1,-1), 6),
+            ("TOPPADDING",     (0,0), (-1,-1), 3),
+            ("BOTTOMPADDING",  (0,0), (-1,-1), 3),
+        ])
+
+    def _ai_quote(text):
+        if not text: return []
+        out = [_sp(4), Paragraph("AI Analysis:", _style("ail", fontSize=8, textColor=_C_PRIMARY, fontName="Helvetica-Bold"))]
+        for ln in (text or "").splitlines():
+            if ln.strip():
+                out.append(Paragraph(ln.strip(), S_AI))
+        out.append(_sp(4))
+        return out
 
     story = []
 
@@ -1180,29 +1220,19 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
     story.append(Paragraph(f"Overall LLM Readiness Score: {overall}%", _style("ov", fontSize=18, textColor=_score_color(overall), fontName="Helvetica-Bold", alignment=TA_CENTER)))
     story.append(_sp(8))
 
-    # Pillar score table
+    # Pillar score table with score bars
     _pillar_data = [["Pillar", "Score", "Grade"]]
     for pname, psc in pillar_scores.items():
-        if psc >= 80:   grade, color = "Good",  _C_SUCCESS
-        elif psc >= 55: grade, color = "Fair",  _C_WARN
-        else:           grade, color = "Poor",  _C_DANGER
+        _pc = _score_color(psc)
+        _gl = "A" if psc >= 85 else "B" if psc >= 70 else "C" if psc >= 50 else "D" if psc >= 35 else "F"
+        _bar = "█" * (psc // 5) + "░" * (20 - psc // 5)
         _pillar_data.append([
             Paragraph(pname, _style("pt", fontSize=9, textColor=_C_WHITE, fontName="Helvetica")),
-            Paragraph(f"{psc}%", _style("ps", fontSize=9, textColor=color, fontName="Helvetica-Bold")),
-            Paragraph(grade,     _style("pg", fontSize=9, textColor=color, fontName="Helvetica")),
+            Paragraph(f"{_bar}  {psc}%", _style("ps", fontSize=7, textColor=_pc, fontName="Helvetica")),
+            Paragraph(_gl, _style("pg", fontSize=9, textColor=_pc, fontName="Helvetica-Bold")),
         ])
-    _pt = Table(_pillar_data, colWidths=["60%", "20%", "20%"])
-    _pt.setStyle(TableStyle([
-        ("BACKGROUND",  (0, 0), (-1, 0),  _C_PRIMARY),
-        ("TEXTCOLOR",   (0, 0), (-1, 0),  white),
-        ("FONTNAME",    (0, 0), (-1, 0),  "Helvetica-Bold"),
-        ("FONTSIZE",    (0, 0), (-1, 0),  9),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_C_BG, _C_CARD]),
-        ("GRID",        (0, 0), (-1, -1), 0.5, _C_BORDER),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING",  (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING",(0,0), (-1, -1), 5),
-    ]))
+    _pt = Table(_pillar_data, colWidths=["30%", "55%", "15%"])
+    _pt.setStyle(_table_style())
     story.append(_pt)
     story.append(_sp(8))
     story.append(_hr())
@@ -1212,26 +1242,16 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
     story.append(_sp(4))
     _pp_data = [["Page", "URL", "JS", "Schema"]]
     for url_key, label in url_labels.items():
-        _js_s  = js_results.get(url_key, {}).get("score", "—")
-        _sc_s  = schema_results.get(url_key, {}).get("score", "—")
+        _js_s = js_results.get(url_key, {}).get("score", "—")
+        _sc_s = schema_results.get(url_key, {}).get("score", "—")
         _pp_data.append([
-            Paragraph(label,   _style("pl", fontSize=8, textColor=_C_WHITE,   fontName="Helvetica")),
-            Paragraph(url_key, _style("pu", fontSize=7, textColor=_C_MUTED,   fontName="Helvetica")),
+            Paragraph(label,   _style("pl", fontSize=8, textColor=_C_WHITE, fontName="Helvetica")),
+            Paragraph(url_key, _style("pu", fontSize=7, textColor=_C_MUTED, fontName="Helvetica")),
             Paragraph(str(_js_s), _style("pj", fontSize=8, textColor=_score_color(_js_s) if isinstance(_js_s, int) else _C_MUTED, fontName="Helvetica-Bold")),
             Paragraph(str(_sc_s), _style("pk", fontSize=8, textColor=_score_color(_sc_s) if isinstance(_sc_s, int) else _C_MUTED, fontName="Helvetica-Bold")),
         ])
     _ppt = Table(_pp_data, colWidths=["18%", "52%", "15%", "15%"])
-    _ppt.setStyle(TableStyle([
-        ("BACKGROUND",  (0, 0), (-1, 0),  _C_PRIMARY),
-        ("TEXTCOLOR",   (0, 0), (-1, 0),  white),
-        ("FONTNAME",    (0, 0), (-1, 0),  "Helvetica-Bold"),
-        ("FONTSIZE",    (0, 0), (-1, 0),  8),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_C_BG, _C_CARD]),
-        ("GRID",        (0, 0), (-1, -1), 0.5, _C_BORDER),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING",  (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING",(0,0), (-1, -1), 4),
-    ]))
+    _ppt.setStyle(_table_style())
     story.append(_ppt)
     story.append(_sp(8))
     story.append(_hr())
@@ -1244,42 +1264,201 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
         icon = "CRITICAL" if status == "danger" else "WARNING"
         story.append(Paragraph(f"{i}. [{icon} — {pillar}] {text}", sty))
         story.append(_sp(2))
+    if _no_blog:
+        story.append(Paragraph("[INFO — Content] No blog audited — AI systems preferentially cite brands with editorial content.", S_WARN))
+        story.append(_sp(2))
     story.append(_hr())
 
-    # ── Robots.txt summary ────────────────────────────────────────────────────
-    story.append(Paragraph("Robots & Crawlability", S_H2))
-    story.append(_sp(3))
+    # ── Pillar 1: JavaScript Rendering ────────────────────────────────────────
+    js_score = pillar_scores.get("JS Rendering", 0)
+    story.append(Paragraph(f"Pillar 1 — JavaScript Rendering  {js_score}%", S_H2))
+    story.append(Paragraph("PAGE-LEVEL · Checked on each of your pages", _style("jss", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
+    story.append(_sp(4))
+    for test_url, js_r in js_results.items():
+        lbl = url_labels.get(test_url, test_url)
+        if js_r.get("error"):
+            story.append(Paragraph(f"{lbl}: ERROR — {js_r['error']}", S_CRIT)); continue
+        _jsc = _score_color(js_r.get("score", 0))
+        story.append(Paragraph(f"{lbl}: {js_r.get('score',0)}/100", _style("jph", fontSize=10, textColor=_jsc, fontName="Helvetica-Bold")))
+        comp = js_r.get("comparison")
+        if comp:
+            _cmp_rows = [["Content", "HTML (Crawler)", "JS (Browser)", "Impact"]]
+            for c in comp.get("comparison", []):
+                if not c.get("name"): continue
+                _st = "MISSING" if c["status"] == "missing" else "MINOR GAP" if c["status"] == "warn" else "OK"
+                _cc = _C_DANGER if c["status"] == "missing" else _C_WARN if c["status"] == "warn" else _C_SUCCESS
+                _cmp_rows.append([
+                    Paragraph(str(c["name"]),     _style("c1", fontSize=8, textColor=_C_WHITE,  fontName="Helvetica")),
+                    Paragraph(str(c["html_val"]), _style("c2", fontSize=8, textColor=_C_MUTED,  fontName="Helvetica")),
+                    Paragraph(str(c["js_val"]),   _style("c3", fontSize=8, textColor=_C_TEAL,   fontName="Helvetica")),
+                    Paragraph(_st,                _style("c4", fontSize=8, textColor=_cc,        fontName="Helvetica-Bold")),
+                ])
+            if len(_cmp_rows) > 1:
+                _cmt = Table(_cmp_rows, colWidths=["35%", "20%", "20%", "25%"])
+                _cmt.setStyle(_table_style())
+                story.append(_cmt)
+            html_t = comp.get("html_summary", {}).get("text_content_length", 0)
+            js_t   = comp.get("js_summary",   {}).get("text_content_length", 0)
+            if js_t > html_t:
+                pct = round(html_t / max(js_t, 1) * 100)
+                _pc = _score_color(pct)
+                story.append(_sp(4))
+                story.append(Paragraph(f"Content Visibility: {pct}% visible to AI  (HTML: {html_t:,} chars · JS: {js_t:,} chars · Hidden: {js_t-html_t:,} chars)", _style("cv", fontSize=8, textColor=_pc, fontName="Helvetica-Bold")))
+        if js_r.get("frameworks"):
+            for fname, fsev, fnote in js_r["frameworks"]:
+                _fc = _C_DANGER if fsev == "high" else _C_WARN
+                story.append(Paragraph(f"Framework: {fname} ({fsev}) — {fnote}", _style("fw", fontSize=8, textColor=_fc, fontName="Helvetica")))
+        story.extend(_ai_quote(_bifrost_js.get(test_url)))
+        story.append(_sp(4))
+    story.append(_hr())
+
+    # ── Pillar 2: Robots & Crawlability ──────────────────────────────────────
+    rob_score = pillar_scores.get("Robots & Crawl", 0)
+    story.append(Paragraph(f"Pillar 2 — Robots & Crawlability  {rob_score}%", S_H2))
+    story.append(Paragraph("SITE-LEVEL · Controls all crawler access", _style("rss", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
+    story.append(_sp(4))
+    cf = robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}
+    if cf.get("bot_fight_mode_likely") or (cf.get("cloudflare_detected") and cf.get("blocked_bots")):
+        story.append(Paragraph(f"ANTI-BOT PROTECTION ACTIVE — Blocking: {', '.join(cf.get('blocked_bots', []))}", S_CRIT))
+        story.append(_sp(2))
     if robots_result.get("found"):
         story.append(Paragraph(f"robots.txt: Found  |  Sitemaps: {len(robots_result.get('sitemaps', []))}", S_BODY))
         _blocked = robots_result.get("blocked_resources", [])
         story.append(Paragraph(f"Blocked resources: {', '.join(_blocked) if _blocked else 'None'}", S_BODY))
-        _ai_results = robots_result.get("ai_agent_results", robots_result.get("ai_results", {}))
-        if _ai_results:
+        _ai_res = robots_result.get("ai_agent_results", robots_result.get("ai_results", {}))
+        if _ai_res:
             _ai_rows = [["Bot", "Status"]]
-            for bn, info in _ai_results.items():
+            for bn, info in _ai_res.items():
                 _av = info.get("robots_allowed", info.get("allowed"))
                 _as = "Allowed" if _av is True else "Blocked" if _av is False else "Unknown"
                 _ac = _C_SUCCESS if _av is True else _C_DANGER if _av is False else _C_MUTED
                 _ai_rows.append([
-                    Paragraph(bn,  _style("ab", fontSize=8, textColor=_C_WHITE, fontName="Helvetica")),
-                    Paragraph(_as, _style("as", fontSize=8, textColor=_ac,      fontName="Helvetica-Bold")),
+                    Paragraph(bn,  _style("rb1", fontSize=8, textColor=_C_WHITE, fontName="Helvetica")),
+                    Paragraph(_as, _style("rb2", fontSize=8, textColor=_ac,      fontName="Helvetica-Bold")),
                 ])
             _ait = Table(_ai_rows, colWidths=["70%", "30%"])
-            _ait.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,0), _C_PRIMARY),
-                ("TEXTCOLOR",  (0,0), (-1,0), white),
-                ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
-                ("FONTSIZE",   (0,0), (-1,0), 8),
-                ("ROWBACKGROUNDS", (0,1), (-1,-1), [_C_BG, _C_CARD]),
-                ("GRID",       (0,0), (-1,-1), 0.5, _C_BORDER),
-                ("LEFTPADDING",(0,0), (-1,-1), 6),
-                ("TOPPADDING", (0,0), (-1,-1), 3),
-                ("BOTTOMPADDING",(0,0),(-1,-1),3),
-            ]))
+            _ait.setStyle(_table_style())
             story.append(_ait)
     else:
         story.append(Paragraph("robots.txt: NOT FOUND", S_CRIT))
-    story.append(_sp(8))
+    story.extend(_ai_quote(_bifrost_robots))
+    story.append(_hr())
+
+    # ── Pillar 3: Schema & Entity ─────────────────────────────────────────────
+    sch_score = pillar_scores.get("Schema & Entity", 0)
+    story.append(Paragraph(f"Pillar 3 — Schema & Entity  {sch_score}%", S_H2))
+    story.append(Paragraph("PAGE-LEVEL · Checked on each of your pages", _style("sch_s", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
+    story.append(_sp(4))
+    for test_url, sr in schema_results.items():
+        lbl = url_labels.get(test_url, test_url)
+        if sr.get("error"):
+            story.append(Paragraph(f"{lbl}: ERROR", S_CRIT)); continue
+        _sc2 = _score_color(sr.get("score", 0))
+        story.append(Paragraph(f"{lbl}: {sr.get('score',0)}/100", _style("sph", fontSize=10, textColor=_sc2, fontName="Helvetica-Bold")))
+        schema_data = sr.get("schema", {})
+        types = schema_data.get("types", [])
+        validations = schema_data.get("validations", [])
+        schemas = schema_data.get("schemas", [])
+        if types:
+            story.append(Paragraph(f"Types: {', '.join(types)}", S_BODY))
+        ess_found   = schema_data.get("essential_found", [])
+        ess_missing = schema_data.get("essential_missing", [])
+        if ess_found:
+            story.append(Paragraph(f"Essential found: {', '.join(ess_found)}", S_OK))
+        if ess_missing:
+            story.append(Paragraph(f"Essential missing: {', '.join(ess_missing)}", S_WARN))
+        for v in validations:
+            comp2 = v.get("completeness", 0)
+            _vc = _score_color(comp2)
+            miss = f" — Missing: {', '.join(v['missing'])}" if v.get("missing") else ""
+            story.append(Paragraph(f"{v.get('type','?')}: {comp2}% complete{miss}", _style("val", fontSize=8, textColor=_vc, fontName="Helvetica")))
+        meta_data = sr.get("meta", {})
+        if meta_data:
+            title = meta_data.get("title", "")
+            desc_len = meta_data.get("desc_len", 0)
+            canon = meta_data.get("canonical", "")
+            story.append(Paragraph(f"Title ({len(title)} chars): {title[:80] or '(missing)'}", S_OK if title else S_CRIT))
+            story.append(Paragraph(f"Meta description: {desc_len} chars", S_OK if 100 <= desc_len <= 160 else S_WARN))
+            if not canon:
+                story.append(Paragraph("Canonical: Missing", S_WARN))
+            elif meta_data.get("canonical_matches_url"):
+                story.append(Paragraph(f"Canonical: Matching", S_OK))
+            else:
+                story.append(Paragraph(f"Canonical: Not matching — {canon[:80]}", S_CRIT))
+            if meta_data.get("was_redirected"):
+                story.append(Paragraph(f"Redirect detected — final URL: {meta_data.get('final_url','')[:80]}", S_WARN))
+        if not schemas:
+            story.append(Paragraph("No Schema.org structured data found", S_WARN))
+        story.extend(_ai_quote(_bifrost_schema.get(test_url)))
+        story.append(_sp(4))
+    story.append(_hr())
+
+    # ── Pillar 4: AI Discoverability ──────────────────────────────────────────
+    llm_score_val = pillar_scores.get("AI Discoverability", 0)
+    story.append(Paragraph(f"Pillar 4 — AI Discoverability  {llm_score_val}%", S_H2))
+    story.append(Paragraph("SITE-LEVEL · llm.txt files + AI Info Page", _style("llm_s", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
+    story.append(_sp(4))
+    llm_txt_data = llm_result.get("llm_txt", llm_result.get("files", {}))
+    for path, info in llm_txt_data.items():
+        found = info.get("found")
+        story.append(Paragraph(f"{path}: {'Found' if found else 'Not found'}", S_OK if found else S_WARN))
+        if found and info.get("lines"):
+            story.append(Paragraph(f"  Lines: {info.get('lines')} · Chars: {info.get('chars',0):,} · Has links: {'Yes' if info.get('has_links') else 'No'} · Has sections: {'Yes' if info.get('has_sections') else 'No'}", S_MUTED))
+    ai_info = llm_result.get("ai_info_page", {})
+    if ai_info.get("found"):
+        story.append(Paragraph(f"AI Info Page: Found — {ai_info.get('url','')[:80]}", S_OK))
+        story.append(Paragraph(f"  Linked from footer: {'Yes' if ai_info.get('linked_from_footer') else 'No'}  |  Indexable: {'Yes' if ai_info.get('indexable') else 'No'}", S_BODY))
+    else:
+        story.append(Paragraph("AI Info Page: Not found at /ai-info or similar", S_WARN))
+    wellknown = llm_result.get("wellknown", {})
+    for path, info in wellknown.items():
+        story.append(Paragraph(f"{'Found' if info.get('found') else 'Not found'}: {path}", S_OK if info.get("found") else S_MUTED))
+    story.extend(_ai_quote(_bifrost_llm))
+    story.append(_hr())
+
+    # ── Semantic Hierarchy ────────────────────────────────────────────────────
+    sem_score = pillar_scores.get("Semantic Hierarchy", 0)
+    story.append(Paragraph(f"Semantic Hierarchy & Content Structure  {sem_score}%", S_H2))
+    story.append(Paragraph("PAGE-LEVEL", _style("sem_s", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
+    story.append(_sp(4))
+    for test_url, sem_r in semantic_results.items():
+        lbl = url_labels.get(test_url, test_url)
+        if sem_r.get("error"):
+            story.append(Paragraph(f"{lbl}: ERROR", S_CRIT)); continue
+        story.append(Paragraph(lbl, _style("sph2", fontSize=10, textColor=_C_WHITE, fontName="Helvetica-Bold")))
+        hier_ok = sem_r.get("hierarchy_ok", True)
+        story.append(Paragraph(f"Heading hierarchy: {'Valid' if hier_ok else 'Issues — skipped levels'}", S_OK if hier_ok else S_WARN))
+        sem_elems = sem_r.get("semantic_elements", {})
+        if sem_elems:
+            story.append(Paragraph(f"Semantic elements: {', '.join(f'{k}:{v}' for k,v in sem_elems.items())}", S_BODY))
+        else:
+            story.append(Paragraph("No semantic HTML5 elements found", S_WARN))
+        html_len = sem_r.get("html_length", 0)
+        text_len = sem_r.get("text_length", 0)
+        if html_len > 0:
+            ratio = text_len / html_len * 100
+            story.append(Paragraph(f"Text-to-HTML ratio: {ratio:.1f}%", S_OK if ratio >= 15 else S_WARN))
+        story.extend(_ai_quote(_bifrost_sem.get(test_url)))
+        story.append(_sp(4))
+    story.append(_hr())
+
+    # ── Security & Exposure ───────────────────────────────────────────────────
+    sec_score_val = pillar_scores.get("Security", 0)
+    story.append(Paragraph(f"Security & Exposure  {sec_score_val}%", S_H2))
+    story.append(Paragraph("SITE-LEVEL · Sensitive path probing", _style("sec_s", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
+    story.append(_sp(4))
+    sec_findings = _security.get("findings", {})
+    sec_total    = _security.get("total_exposed", 0)
+    if sec_total == 0 and not sec_findings.get("html_exposure") and not sec_findings.get("robots_allowlist"):
+        story.append(Paragraph("No sensitive paths accessible — all probed paths returned 403/404/401", S_OK))
+    else:
+        for cat, lbl_str in [("critical", "Critical"), ("backend", "Backend"), ("customer", "Customer")]:
+            for f in sec_findings.get(cat, []):
+                story.append(Paragraph(f"[{lbl_str}] {f['path']} — HTTP {f['status']} ({f['size']:,} bytes)", S_CRIT if cat == "critical" else S_WARN))
+        for item in sec_findings.get("html_exposure", []):
+            story.append(Paragraph(f"[HTML] {item}", S_WARN))
+        for item in sec_findings.get("robots_allowlist", []):
+            story.append(Paragraph(f"[Robots Allow] {item['bot']}: {item['path']}", S_WARN))
     story.append(_hr())
 
     # ── Bot crawl results ─────────────────────────────────────────────────────
@@ -1289,31 +1468,30 @@ def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
         _bc_rows = [["Bot", "Company", "Status", "HTTP", "Load Time"]]
         for bn, r in bot_crawl_results.items():
             if r.get("error"):
-                _bc_rows.append([bn, "—", "ERROR", "—", "—"])
+                _bc_rows.append([Paragraph(bn, _style("be", fontSize=8, textColor=_C_WHITE, fontName="Helvetica")), Paragraph("—", S_MUTED), Paragraph("ERROR", S_CRIT), Paragraph("—", S_MUTED), Paragraph("—", S_MUTED)])
             else:
                 _st = "Allowed" if r.get("is_allowed") else "BLOCKED"
                 _sc = _C_SUCCESS if r.get("is_allowed") else _C_DANGER
                 _bc_rows.append([
-                    Paragraph(bn,              _style("bc1", fontSize=8, textColor=_C_WHITE,  fontName="Helvetica")),
-                    Paragraph(r.get("company",""), _style("bc2", fontSize=8, textColor=_C_MUTED,  fontName="Helvetica")),
-                    Paragraph(_st,             _style("bc3", fontSize=8, textColor=_sc,        fontName="Helvetica-Bold")),
+                    Paragraph(bn,                       _style("bc1", fontSize=8, textColor=_C_WHITE, fontName="Helvetica")),
+                    Paragraph(r.get("company",""),       _style("bc2", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")),
+                    Paragraph(_st,                       _style("bc3", fontSize=8, textColor=_sc,      fontName="Helvetica-Bold")),
                     Paragraph(str(r.get("status_code","—")), _style("bc4", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")),
-                    Paragraph(f"{r.get('load_time','—')}s", _style("bc5", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")),
+                    Paragraph(f"{r.get('load_time','—')}s",  _style("bc5", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")),
                 ])
         _bct = Table(_bc_rows, colWidths=["25%", "25%", "20%", "15%", "15%"])
-        _bct.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), _C_PRIMARY),
-            ("TEXTCOLOR",  (0,0), (-1,0), white),
-            ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
-            ("FONTSIZE",   (0,0), (-1,0), 8),
-            ("ROWBACKGROUNDS", (0,1), (-1,-1), [_C_BG, _C_CARD]),
-            ("GRID",       (0,0), (-1,-1), 0.5, _C_BORDER),
-            ("LEFTPADDING",(0,0), (-1,-1), 6),
-            ("TOPPADDING", (0,0), (-1,-1), 3),
-            ("BOTTOMPADDING",(0,0),(-1,-1),3),
-        ]))
+        _bct.setStyle(_table_style())
         story.append(_bct)
         story.append(_sp(8))
+        story.append(_hr())
+
+    # ── Pattern Brain ─────────────────────────────────────────────────────────
+    if _brain:
+        story.append(Paragraph("Pattern Brain — AI Executive Summary", S_H2))
+        story.append(_sp(4))
+        for ln in _brain.splitlines():
+            if ln.strip():
+                story.append(Paragraph(ln.strip(), S_BODY))
         story.append(_hr())
 
     # ── Footer ────────────────────────────────────────────────────────────────
