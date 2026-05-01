@@ -502,6 +502,18 @@ def check_semantic_hierarchy(url):
 def generate_report_html(domain, overall, pillar_scores, url_labels, js_results, llm_result, robots_result, schema_results, semantic_results, bot_crawl_results, recs):
     """Generate a self-contained branded HTML report matching the live app design."""
     B = BRAND  # shorthand
+    _ss = st.session_state.get("_audit", {})
+    _bifrost_js     = _ss.get("_bifrost_js", {})
+    _bifrost_robots = _ss.get("_bifrost_robots")
+    _bifrost_schema = _ss.get("_bifrost_schema", {})
+    _bifrost_llm    = _ss.get("_bifrost_llm")
+    _bifrost_sem    = _ss.get("_bifrost_sem", {})
+    _brain          = _ss.get("pattern_brain")
+    _security       = _ss.get("security_result", {})
+    _no_blog        = _ss.get("no_blog", False)
+
+    def _ai_block(text):
+        return f'<div style="background:{B["bg_card"]};border:1px solid {B["border"]};border-left:3px solid {B["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;margin:12px 0;"><div style="font-size:11px;color:{B["text_secondary"]};text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">AI Analysis</div><div style="color:{B["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{text}</div></div>'
 
     def _score_color(s):
         return B["teal"] if s >= 75 else B["primary"] if s >= 50 else B["warning"] if s >= 35 else B["danger"]
@@ -601,6 +613,8 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
         if not comp and js_r.get("risk_factors"):
             for rf in js_r["risk_factors"]:
                 js_sec += _status(rf, "warning")
+        if _bifrost_js.get(test_url):
+            js_sec += _ai_block(_bifrost_js[test_url])
 
     # ── Pillar 2: Robots & Crawlability ─────────────────────────────────
     rob_sec = _pillar_header(2, "Robots.txt &amp; Crawler Access", pillar_scores.get("Robots & Crawl", 0))
@@ -629,6 +643,12 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
                 rob_sec += _status(path, "info")
     else:
         rob_sec += _status("No robots.txt found", "danger")
+    cf = robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}
+    if cf.get("bot_fight_mode_likely") or (cf.get("cloudflare_detected") and cf.get("blocked_bots")):
+        blocked_bots = cf.get("blocked_bots", [])
+        rob_sec += f'<div style="background:{B["danger"]}20;border:1px solid {B["danger"]};border-radius:10px;padding:14px 18px;margin:12px 0;"><strong style="color:{B["danger"]};">⚠ Anti-Bot Protection Active</strong><div style="color:{B["white"]};font-size:13px;margin-top:4px;">Cloudflare is blocking AI crawlers: {", ".join(blocked_bots)}. This overrides robots.txt.</div></div>'
+    if _bifrost_robots:
+        rob_sec += _ai_block(_bifrost_robots)
 
     # ── Pillar 3: Schema & Entity ────────────────────────────────────────
     schema_sec = _pillar_header(3, "Schema &amp; Entity", pillar_scores.get("Schema & Entity", 0))
@@ -675,6 +695,8 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
                 schema_sec += _status(f"Redirect detected — fetched: {meta_data.get('final_url','')[:80]}", "warning")
         if not schemas:
             schema_sec += _status("No Schema.org structured data found", "warning")
+        if _bifrost_schema.get(test_url):
+            schema_sec += _ai_block(_bifrost_schema[test_url])
 
     # ── Pillar 4: AI Discoverability ─────────────────────────────────────
     llm_sec = _pillar_header(4, "AI Discoverability", pillar_scores.get("AI Discoverability", 0))
@@ -701,6 +723,10 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
         llm_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 6px 0;">AI Policy Files (/.well-known/):</div>'
         for path, info in wellknown.items():
             llm_sec += _status(path, "success" if info.get("found") else "info")
+    if _bifrost_llm:
+        llm_sec += _ai_block(_bifrost_llm)
+    if _no_blog:
+        llm_sec += f'<div style="background:{B["warning"]}15;border:1px solid {B["warning"]};border-radius:10px;padding:12px 16px;margin:12px 0;color:{B["white"]};font-size:13px;"><strong style="color:{B["warning"]};">No Blog Audited</strong> — AI systems preferentially cite brands with editorial content. Consider a blog, resource hub, or thought-leadership section.</div>'
 
     # ── Semantic Hierarchy ───────────────────────────────────────────────
     sem_sec = _section_header("Semantic Hierarchy &amp; Content Structure", "PAGE-LEVEL")
@@ -727,6 +753,8 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
         if html_len > 0:
             ratio = text_len / html_len * 100
             sem_sec += _status(f"Text-to-HTML ratio: {ratio:.1f}%", "success" if ratio >= 15 else "warning")
+        if _bifrost_sem.get(test_url):
+            sem_sec += _ai_block(_bifrost_sem[test_url])
 
     # ── Live Bot Crawl ───────────────────────────────────────────────────
     bot_sec = ""
@@ -751,6 +779,42 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
         c = B["danger"] if status == "danger" else B["warning"]
         pill = _pill(pillar, c)
         rec_sec += f'<div style="background:{B["bg_card"]};border:1px solid {B["border"]};border-left:3px solid {c};border-radius:0 10px 10px 0;padding:14px 18px;margin:8px 0;">{pill}<div style="color:{B["white"]};font-size:14px;margin-top:6px;">{text}</div></div>'
+
+    # ── Security section ─────────────────────────────────────────────────
+    sec_sec = _section_header("Security &amp; Exposure", "SITE-LEVEL")
+    sec_findings = _security.get("findings", {})
+    sec_score = _security.get("score", 100)
+    sec_total = _security.get("total_exposed", 0)
+    sec_sec += f'<div style="font-size:13px;color:{B["text_secondary"]};margin-bottom:10px;">Score: <span style="color:{B["teal"] if sec_score >= 75 else B["warning"] if sec_score >= 50 else B["danger"]};font-weight:700;">{sec_score}/100</span></div>'
+    if sec_total == 0 and not sec_findings.get("html_exposure") and not sec_findings.get("robots_allowlist"):
+        sec_sec += _status("No sensitive paths accessible — all probed paths returned 403/404/401", "success")
+    else:
+        for cat, lbl_str, col_key in [("critical", "Critical paths (admin/env/config)", "danger"), ("backend", "Backend paths (API/GraphQL)", "warning"), ("customer", "Customer paths (account/checkout)", "warning")]:
+            items = sec_findings.get(cat, [])
+            if items:
+                sec_sec += f'<div style="font-weight:600;color:{B[col_key]};margin:10px 0 4px 0;">{lbl_str} — accessible to AI bots:</div>'
+                for f in items:
+                    sec_sec += _status(f'{f["path"]} — HTTP {f["status"]} ({f["size"]:,} bytes)', col_key)
+        if sec_findings.get("html_exposure"):
+            sec_sec += f'<div style="font-weight:600;color:{B["warning"]};margin:10px 0 4px 0;">Sensitive content in HTML source:</div>'
+            for item in sec_findings["html_exposure"]:
+                sec_sec += _status(item, "warning")
+        if sec_findings.get("robots_allowlist"):
+            sec_sec += f'<div style="font-weight:600;color:{B["warning"]};margin:10px 0 4px 0;">robots.txt explicitly allows sensitive paths for AI bots:</div>'
+            for item in sec_findings["robots_allowlist"]:
+                sec_sec += _status(f'{item["bot"]}: {item["path"]}', "warning")
+    sec_items = _security.get("items", [])
+    if sec_items:
+        sec_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 4px 0;">Score breakdown:</div>'
+        for item in sec_items:
+            pts = item.get("points", 0)
+            s = "success" if pts >= 0 else "danger"
+            sec_sec += _status(f'{"+" if pts >= 0 else ""}{pts} pts — {item.get("label", "")}', s)
+
+    # ── Pattern Brain section ────────────────────────────────────────────
+    brain_sec = ""
+    if _brain:
+        brain_sec = f'<div style="margin-top:36px;"><div style="font-size:22px;font-weight:800;color:{B["white"]};margin-bottom:4px;">Pattern Brain — AI Analysis</div><div style="height:1px;background:linear-gradient(90deg,{B["purple"]},{B["primary"]},transparent);margin-bottom:16px;"></div><div style="background:{B["bg_card"]};border:1px solid {B["border"]};border-radius:12px;padding:20px 24px;color:{B["white"]};font-size:14px;line-height:1.7;white-space:pre-wrap;">{_brain}</div></div>'
 
     # ── Logo SVG (inline for offline use) ────────────────────────────────
     logo_svg = PATTERN_LOGO_SVG.replace("width=\"180\"", "width=\"140\"").replace("height=\"36\"", "height=\"28\"")
@@ -813,6 +877,8 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
 {sem_sec}
 {bot_sec}
 {rec_sec}
+{sec_sec}
+{brain_sec}
 
 <!-- ── FOOTER ── -->
 <div style="text-align:center;margin-top:48px;padding-top:16px;border-top:1px solid {B["border"]};color:{B["text_secondary"]};font-size:12px;">
@@ -826,6 +892,16 @@ def generate_report_html(domain, overall, pillar_scores, url_labels, js_results,
 
 def generate_report_text(domain, overall, pillar_scores, url_labels, js_results, llm_result, robots_result, schema_results, bot_crawl_results, recs):
     """Generate a plain-text audit report for PDF/download."""
+    _ss = st.session_state.get("_audit", {})
+    _semantic = _ss.get("semantic_results", {})
+    _security = _ss.get("security_result", {})
+    _brain    = _ss.get("pattern_brain")
+    _bifrost_js     = _ss.get("_bifrost_js", {})
+    _bifrost_robots = _ss.get("_bifrost_robots")
+    _bifrost_schema = _ss.get("_bifrost_schema", {})
+    _bifrost_llm    = _ss.get("_bifrost_llm")
+    _bifrost_sem    = _ss.get("_bifrost_sem", {})
+    _no_blog  = _ss.get("no_blog", False)
     lines = []
     lines.append("=" * 70)
     lines.append("PATTERN — LLM ACCESS CHECKER")
@@ -930,27 +1006,102 @@ def generate_report_text(domain, overall, pillar_scores, url_labels, js_results,
         for v in validations:
             if v.get("missing"):
                 lines.append(f"    {v.get('type','?')}: {v.get('completeness',0)}% — Missing: {', '.join(v['missing'])}")
+        if _bifrost_schema.get(test_url):
+            lines.append(f"    AI Analysis:")
+            for ln in _bifrost_schema[test_url].splitlines():
+                lines.append(f"      {ln}")
     lines.append("")
+
+    # Semantic Hierarchy
+    if _semantic:
+        lines.append("SEMANTIC HIERARCHY & CONTENT STRUCTURE [PAGE-LEVEL]")
+        lines.append("-" * 40)
+        for test_url, sem_r in _semantic.items():
+            label = url_labels.get(test_url, test_url)
+            if sem_r.get("error"):
+                lines.append(f"  {label}: ERROR")
+                continue
+            hier_ok = sem_r.get("hierarchy_ok", True)
+            lines.append(f"  {label}: Heading hierarchy {'valid' if hier_ok else 'has issues'}")
+            sem_elems = sem_r.get("semantic_elements", {})
+            if sem_elems:
+                lines.append(f"    Semantic elements: {', '.join(f'{k}={v}' for k,v in sem_elems.items())}")
+            html_len = sem_r.get("html_length", 0)
+            text_len = sem_r.get("text_length", 0)
+            if html_len > 0:
+                ratio = text_len / html_len * 100
+                lines.append(f"    Text-to-HTML ratio: {ratio:.1f}%")
+            if _bifrost_sem.get(test_url):
+                lines.append(f"    AI Analysis:")
+                for ln in _bifrost_sem[test_url].splitlines():
+                    lines.append(f"      {ln}")
+        lines.append("")
 
     # Bot crawl
     if bot_crawl_results:
         lines.append("LIVE BOT CRAWL RESULTS")
         lines.append("-" * 40)
         for bn, r in bot_crawl_results.items():
-            if r["error"]:
+            if r.get("error"):
                 lines.append(f"  {bn}: ERROR — {r['error']}")
             else:
                 status = "Allowed" if r["is_allowed"] else "BLOCKED"
                 lines.append(f"  {bn} ({r['company']}): {status} — HTTP {r['status_code']} — {r['content_length']:,} chars — {r['load_time']}s")
         lines.append("")
 
+    # Security
+    sec_findings = _security.get("findings", {})
+    sec_total = _security.get("total_exposed", 0)
+    lines.append("SECURITY & EXPOSURE [SITE-LEVEL]")
+    lines.append("-" * 40)
+    lines.append(f"  Score: {_security.get('score', 100)}/100")
+    cf = robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}
+    if cf.get("bot_fight_mode_likely") or (cf.get("cloudflare_detected") and cf.get("blocked_bots")):
+        lines.append(f"  ⚠ Anti-bot protection active — blocking: {', '.join(cf.get('blocked_bots', []))}")
+    if sec_total == 0 and not sec_findings.get("html_exposure") and not sec_findings.get("robots_allowlist"):
+        lines.append("  No sensitive paths accessible — all probed paths returned 403/404/401")
+    else:
+        for cat, lbl_str in [("critical", "Critical"), ("backend", "Backend"), ("customer", "Customer")]:
+            for f in sec_findings.get(cat, []):
+                lines.append(f"  [{lbl_str}] {f['path']} — HTTP {f['status']} ({f['size']:,} bytes)")
+        for item in sec_findings.get("html_exposure", []):
+            lines.append(f"  [HTML] {item}")
+        for item in sec_findings.get("robots_allowlist", []):
+            lines.append(f"  [Robots Allow] {item['bot']}: {item['path']}")
+    lines.append("")
+
     # Recommendations
     lines.append("PRIORITY RECOMMENDATIONS")
     lines.append("-" * 40)
     for i, (status, pillar, text) in enumerate(recs, 1):
-        icon = "🔴" if status == "danger" else "🟡"
-        lines.append(f"  {i}. [{pillar}] {text}")
+        icon = "CRITICAL" if status == "danger" else "WARNING"
+        lines.append(f"  {i}. [{icon} — {pillar}] {text}")
+    if _no_blog:
+        lines.append(f"  {len(recs)+1}. [INFO — Content] No blog audited — consider editorial content for AI citation potential.")
     lines.append("")
+
+    # Bifrost AI analyses — Robots & LLM (site-level)
+    if _bifrost_robots:
+        lines.append("AI ANALYSIS — ROBOTS & CRAWL")
+        lines.append("-" * 40)
+        for ln in _bifrost_robots.splitlines():
+            lines.append(f"  {ln}")
+        lines.append("")
+    if _bifrost_llm:
+        lines.append("AI ANALYSIS — AI DISCOVERABILITY")
+        lines.append("-" * 40)
+        for ln in _bifrost_llm.splitlines():
+            lines.append(f"  {ln}")
+        lines.append("")
+
+    # Pattern Brain
+    if _brain:
+        lines.append("=" * 70)
+        lines.append("PATTERN BRAIN — AI EXECUTIVE SUMMARY")
+        lines.append("=" * 70)
+        for ln in _brain.splitlines():
+            lines.append(f"  {ln}")
+        lines.append("")
 
     lines.append("=" * 70)
     lines.append("Report generated by Pattern LLM Access Checker")
