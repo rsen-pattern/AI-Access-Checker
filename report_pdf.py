@@ -52,6 +52,8 @@ from svglib.svglib import svg2rlg
 
 
 # ─── PATTERN LOGO ─────────────────────────────────────────────────────────────
+# Identical to PATTERN_LOGO_SVG used by the Streamlit UI. Kept inline so the
+# generator has no on-disk asset dependencies.
 PATTERN_LOGO_SVG = '''<svg width="180" height="36" viewBox="0 0 675 135.7" fill="none" xmlns="http://www.w3.org/2000/svg">
 <path fill="#009BFF" d="M81.55,0.99L0.99,81.55c-1.32,1.32-1.32,3.47,0,4.8l19.84,19.84c1.32,1.32,3.47,1.32,4.8,0l80.56-80.56c1.32-1.32,1.32-3.47,0-4.8L86.35,0.99C85.02-0.33,82.88-0.33,81.55,0.99z"/>
 <path fill="#009BFF" d="M114.73,34.17L67.37,81.54c-1.32,1.32-1.32,3.47,0,4.8l19.84,19.84c1.32,1.32,3.47,1.32,4.8,0l47.36-47.36c1.32-1.32,1.32-3.47,0-4.8l-19.84-19.84C118.2,32.85,116.05,32.85,114.73,34.17z"/>
@@ -67,6 +69,7 @@ PATTERN_LOGO_SVG = '''<svg width="180" height="36" viewBox="0 0 675 135.7" fill=
 PATTERN_WEBSITE = "https://au.pattern.com/"
 
 # ─── BRAND ────────────────────────────────────────────────────────────────────
+# Single source of truth — must match BRAND dict in ai_access_checker.py
 BRAND = {
     "bg_dark":        "#090a0f",
     "bg_card":        "#12131a",
@@ -96,15 +99,6 @@ C_DANGER   = HexColor(BRAND["danger"])
 
 GRADE_THRESHOLDS = [(85, "A", "Excellent"), (70, "B", "Good"),
                     (50, "C", "Needs Work"), (35, "D", "Poor"), (0, "F", "Critical")]
-
-# Grade band colours for the cover page score legend
-GRADE_COLORS = {
-    "A": C_TEAL,
-    "B": C_PRIMARY,
-    "C": C_WARN,
-    "D": HexColor("#ff8c00"),
-    "F": C_DANGER,
-}
 
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -142,11 +136,11 @@ def _style(name: str, **kw) -> ParagraphStyle:
     return _style_cache[key]
 
 
-def _S_H1():    return _style("H1",    fontSize=22, textColor=C_WHITE,   fontName="Helvetica-Bold", alignment=TA_CENTER, spaceAfter=4)
-def _S_H2():    return _style("H2",    fontSize=15, textColor=C_WHITE,   fontName="Helvetica-Bold", spaceAfter=4)
-def _S_H3():    return _style("H3",    fontSize=11, textColor=C_WHITE,   fontName="Helvetica-Bold", spaceAfter=2)
-def _S_BODY():  return _style("BODY",  fontSize=9,  textColor=C_WHITE,   fontName="Helvetica",      leading=13, spaceAfter=2)
-def _S_MUTED(): return _style("MUTED", fontSize=8,  textColor=C_MUTED,   fontName="Helvetica",      leading=11, spaceAfter=2)
+def _S_H1():    return _style("H1",    fontSize=22, textColor=C_WHITE,   fontName="Helvetica-Bold", alignment=TA_CENTER, spaceAfter=6)
+def _S_H2():    return _style("H2",    fontSize=15, textColor=C_WHITE,   fontName="Helvetica-Bold", spaceAfter=6)
+def _S_H3():    return _style("H3",    fontSize=11, textColor=C_WHITE,   fontName="Helvetica-Bold", spaceBefore=8, spaceAfter=6)
+def _S_BODY():  return _style("BODY",  fontSize=9,  textColor=C_WHITE,   fontName="Helvetica",      leading=14, spaceAfter=2)
+def _S_MUTED(): return _style("MUTED", fontSize=8,  textColor=C_MUTED,   fontName="Helvetica",      leading=12, spaceAfter=2)
 def _S_LABEL(): return _style("LABEL", fontSize=8,  textColor=C_MUTED,   fontName="Helvetica-Bold", spaceAfter=2)
 def _S_AI():    return _style("AI",    fontSize=9,  textColor=C_WHITE,   fontName="Helvetica",      leading=14, spaceAfter=3)
 def _S_KICKER():return _style("KICK",  fontSize=8,  textColor=C_MUTED,   fontName="Helvetica-Bold", spaceAfter=1)
@@ -167,11 +161,7 @@ class ScoreBar(Flowable):
 
     def draw(self):
         c = self.canv
-        # Semi-transparent track (alpha 0.3 of border colour)
-        track_color = Color(
-            C_BORDER.red, C_BORDER.green, C_BORDER.blue, alpha=0.3
-        )
-        c.setFillColor(track_color)
+        c.setFillColor(C_BORDER)
         c.roundRect(0, 0, self.width, self.height, self.height/2, fill=1, stroke=0)
         filled = self.width * (self.score / 100)
         if filled > 0:
@@ -180,7 +170,7 @@ class ScoreBar(Flowable):
 
 
 class NumberedCircle(Flowable):
-    """Small filled blue circle with white bold number — for Executive Summary."""
+    """Small filled blue circle with white bold number — for Executive Summary numbered items."""
     def __init__(self, number: int, diameter: float = 14):
         super().__init__()
         self.number = number
@@ -200,7 +190,7 @@ class NumberedCircle(Flowable):
         c.setFont("Helvetica-Bold", 8)
         text = str(self.number)
         tw = c.stringWidth(text, "Helvetica-Bold", 8)
-        c.drawString(r - tw/2, r - 3, text)
+        c.drawString(r - tw / 2, r - 3, text)
 
 
 class ScoreLegend(Flowable):
@@ -231,15 +221,12 @@ class ScoreLegend(Flowable):
         for i, (letter, threshold, color) in enumerate(self.BANDS):
             x = x_start + i * (pill_w + gap)
             y = (self.height - pill_h) / 2
-            # Pill background (semi-transparent)
             bg = Color(color.red, color.green, color.blue, alpha=0.2)
             c.setFillColor(bg)
-            c.roundRect(x, y, pill_w, pill_h, pill_h/2, fill=1, stroke=0)
-            # Pill border
+            c.roundRect(x, y, pill_w, pill_h, pill_h / 2, fill=1, stroke=0)
             c.setStrokeColor(color)
             c.setLineWidth(0.5)
-            c.roundRect(x, y, pill_w, pill_h, pill_h/2, fill=0, stroke=1)
-            # Text: "A  85+"
+            c.roundRect(x, y, pill_w, pill_h, pill_h / 2, fill=0, stroke=1)
             c.setFillColor(color)
             c.setFont("Helvetica-Bold", 9)
             label = f"{letter}  {threshold}"
@@ -259,7 +246,7 @@ def _pill(text: str, color: HexColor, font_size: int = 7) -> Paragraph:
 
 
 def _status_dot(text: str, status: str = "info", muted: bool = False) -> Paragraph:
-    """Coloured dot + text."""
+    """Coloured dot + text — analogue of the UI's brand_status helper."""
     color_map = {"success": C_TEAL, "warning": C_WARN, "danger": C_DANGER, "info": C_PRIMARY}
     c = color_map.get(status, C_PRIMARY)
     text_color = "#b3b3b3" if muted else "#fcfcfc"
@@ -285,6 +272,7 @@ def _sp(h: float = 4) -> Spacer:
 
 
 def _table_header_style() -> TableStyle:
+    """Canonical table style — tight header row, generous body rows."""
     return TableStyle([
         ("BACKGROUND",     (0, 0), (-1, 0),  C_PURPLE),
         ("TEXTCOLOR",      (0, 0), (-1, 0),  white),
@@ -293,16 +281,20 @@ def _table_header_style() -> TableStyle:
         ("ALIGN",          (0, 0), (-1, 0),  "LEFT"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_BG, C_CARD]),
         ("GRID",           (0, 0), (-1, -1), 0.4, C_BORDER),
-        ("LEFTPADDING",    (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING",   (0, 0), (-1, -1), 6),
-        ("TOPPADDING",     (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING",  (0, 0), (-1, -1), 4),
+        ("LEFTPADDING",    (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING",   (0, 0), (-1, -1), 8),
+        # Header row — slimmer
+        ("TOPPADDING",     (0, 0), (-1, 0),  6),
+        ("BOTTOMPADDING",  (0, 0), (-1, 0),  6),
+        # Body rows — taller
+        ("TOPPADDING",     (0, 1), (-1, -1), 8),
+        ("BOTTOMPADDING",  (0, 1), (-1, -1), 8),
         ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
     ])
 
 
 def _ai_block(text: str | None, label: str = "AI Analysis") -> list:
-    """Render a Bifrost AI analysis block."""
+    """Render a Bifrost AI analysis block — left-bordered card with body text."""
     if not text:
         return []
 
@@ -322,7 +314,7 @@ def _ai_block(text: str | None, label: str = "AI Analysis") -> list:
     inner = [
         Paragraph(f'<b><font color="#009bff">{label.upper()}</font></b>',
                   _style("ai_label", fontSize=8, textColor=C_PRIMARY,
-                         fontName="Helvetica-Bold", spaceAfter=4)),
+                         fontName="Helvetica-Bold", spaceAfter=8)),
         *body_paragraphs,
     ]
 
@@ -332,32 +324,32 @@ def _ai_block(text: str | None, label: str = "AI Analysis") -> list:
         ("LINEBEFORE",   (0, 0), (0, -1),  3, C_PRIMARY),
         ("LEFTPADDING",  (0, 0), (-1, -1), 14),
         ("RIGHTPADDING", (0, 0), (-1, -1), 14),
-        ("TOPPADDING",   (0, 0), (-1, -1), 10),
-        ("BOTTOMPADDING",(0, 0), (-1, -1), 10),
+        ("TOPPADDING",   (0, 0), (-1, -1), 12),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 12),
     ]))
-    return [_sp(4), box, _sp(8)]
+    return [_sp(6), box, _sp(10)]
 
 
 def _callout(message: str, kind: str = "warning") -> Table:
-    """Coloured callout box."""
+    """Coloured callout box — used for Cloudflare warnings, no-blog notices, etc."""
     color_map = {"warning": C_WARN, "danger": C_DANGER, "info": C_PRIMARY, "success": C_TEAL}
     accent = color_map.get(kind, C_WARN)
     para = Paragraph(message, _style(f"call_{kind}", fontSize=9, textColor=C_WHITE,
-                                     fontName="Helvetica", leading=13))
+                                     fontName="Helvetica", leading=14))
     box = Table([[para]], colWidths=[460])
     box.setStyle(TableStyle([
         ("BACKGROUND",   (0, 0), (-1, -1), C_CARD),
         ("LINEBEFORE",   (0, 0), (0, -1),  3, accent),
-        ("LEFTPADDING",  (0, 0), (-1, -1), 12),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 12),
-        ("TOPPADDING",   (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING",(0, 0), (-1, -1), 8),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 14),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+        ("TOPPADDING",   (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 10),
     ]))
     return box
 
 
 def _pillar_header(num: int | str, title: str, score: int) -> list:
-    """Pillar number kicker + title + score; wrapped in KeepTogether."""
+    """Pillar number kicker + title + score, wrapped in KeepTogether."""
     sc_color = _score_color(score)
     header_table = Table(
         [[
@@ -383,7 +375,7 @@ def _pillar_header(num: int | str, title: str, score: int) -> list:
         ("BOTTOMPADDING",(0, 0), (-1, -1), 0),
         ("SPAN",         (1, 0), (1, 1)),
     ]))
-    # Wrap in KeepTogether so score/title/bar never split across pages
+    # KeepTogether ensures kicker/title/score/bar never split across pages
     return [KeepTogether([
         _sp(12),
         header_table,
@@ -402,7 +394,7 @@ def _page_block_header(label: str, score: int | None = None) -> Paragraph:
     return Paragraph(
         f'<font color="#{C_WHITE.hexval()[2:]}"><b>{label}</b></font>{score_html}',
         _style("pbh", fontSize=11, textColor=C_WHITE, fontName="Helvetica-Bold",
-               spaceBefore=8, spaceAfter=4)
+               spaceBefore=12, spaceAfter=6)
     )
 
 
@@ -436,10 +428,11 @@ def _exec_summary_flowables(pattern_brain: str) -> list:
     items, and falls back to plain paragraphs. `**bold**` markers are stripped
     rather than parsed so we never produce unbalanced inline tags.
 
-    Changes from baseline:
-    - "Top 3 Quick Wins This Week" → "Top 3 Quick Wins" (string-replace at render time)
-    - Numbered items rendered as blue circle + text in a 2-column Table
-    - ### headings bumped to 13pt with 12pt spaceBefore
+    Changes:
+    - "Top 3 Quick Wins This Week" → "Top 3 Quick Wins" at render time
+    - Numbered items rendered as filled blue circle + 2-column Table
+    - ### headings bumped to 13pt with spaceBefore=14
+    - Body paragraphs after headings get spaceBefore=4
     """
     out: list = []
     if not pattern_brain:
@@ -456,37 +449,39 @@ def _exec_summary_flowables(pattern_brain: str) -> list:
     out.append(_section_divider())
     out.append(_sp(4))
 
+    prev_was_heading = False
     for line in pattern_brain.split("\n"):
         line = line.strip()
         if not line:
             out.append(_sp(3))
+            prev_was_heading = False
             continue
         if line.startswith("### "):
             out.append(Paragraph(line[4:], _style("pb_h3", fontSize=13,
                 textColor=C_PRIMARY, fontName="Helvetica-Bold",
-                spaceBefore=12, spaceAfter=2)))
+                spaceBefore=14, spaceAfter=2)))
+            prev_was_heading = True
         elif line.startswith("## "):
             out.append(Paragraph(line[3:], _style("pb_h2", fontSize=12,
                 textColor=C_WHITE, fontName="Helvetica-Bold",
                 spaceBefore=8, spaceAfter=4)))
+            prev_was_heading = True
         elif line.startswith(("• ", "- ", "* ")):
             out.append(Paragraph(
                 f'<font color="#{C_PRIMARY.hexval()[2:]}"><b>›</b></font>'
                 f'&nbsp;&nbsp;{line[2:]}',
                 _style("pb_bul", fontSize=9, textColor=C_WHITE, leading=14,
                        leftIndent=10, spaceAfter=2)))
-        elif line and line[0].isdigit() and len(line) > 2 and line[1] in ".)" :
-            # Numbered item: strip "N." prefix and render as circle + text
+            prev_was_heading = False
+        elif line and line[0].isdigit() and len(line) > 2 and line[1] in ".)":
+            # Numbered item — render as circle + text in a 2-column Table
             body_text = line[2:].strip().replace("**", "")
             num = int(line[0])
-            circle_cell = NumberedCircle(num, diameter=14)
+            circle = NumberedCircle(num, diameter=14)
             text_para = Paragraph(body_text, _style(
                 f"pb_num_{num}", fontSize=9, textColor=C_WHITE, leading=14,
                 spaceBefore=0, spaceAfter=0))
-            num_table = Table(
-                [[circle_cell, text_para]],
-                colWidths=[20, 440],
-            )
+            num_table = Table([[circle, text_para]], colWidths=[20, 440])
             num_table.setStyle(TableStyle([
                 ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
                 ("LEFTPADDING",  (0, 0), (-1, -1), 0),
@@ -496,22 +491,24 @@ def _exec_summary_flowables(pattern_brain: str) -> list:
             ]))
             out.append(num_table)
             out.append(_sp(2))
+            prev_was_heading = False
         else:
             rendered = line.replace("**", "")
-            out.append(Paragraph(rendered, _style("pb_p", fontSize=9,
-                textColor=C_WHITE, leading=14, spaceAfter=2)))
+            sb = 4 if prev_was_heading else 0
+            out.append(Paragraph(rendered, _style(f"pb_p_{sb}", fontSize=9,
+                textColor=C_WHITE, leading=14, spaceBefore=sb, spaceAfter=2)))
+            prev_was_heading = False
     return out
 
 
 def _detailed_analysis_divider() -> list:
-    """Full-bleed divider page — content vertically centred (~42% from top)."""
-    # A4 content height ≈ 257mm. At 42% ≈ 108mm = ~306pt. Logo ~20pt + spacers.
+    """Full-bleed divider page — content vertically centred (~42% from top) with small logo."""
     small_logo = _pattern_logo(width_pt=80.0)
     return [
         PageBreak(),
-        _sp(200),   # ~42% lead-in from top of content area
+        _sp(200),   # ~42% lead-in from content-area top
         small_logo,
-        _sp(14),
+        _sp(16),
         Paragraph(
             f'<font color="#{C_MUTED.hexval()[2:]}" size="9"><b>'
             f'PART TWO</b></font>',
@@ -532,14 +529,11 @@ def _detailed_analysis_divider() -> list:
 
 def _cover_page_flowables(domain: str, overall: int, grade_letter: str,
                            grade_label: str) -> list:
-    """Build the cover page flowables (page 1 only)."""
+    """Build the cover page (page 1) flowables."""
     grade_color = _score_color(overall)
     timestamp = time.strftime("%Y-%m-%d %H:%M UTC")
-
-    # A4 content height ≈ 257mm. Place logo at ~25% from top → ~64mm = ~181pt spacer.
     logo = _pattern_logo(width_pt=180.0)
-
-    out = [
+    return [
         _sp(120),   # ~25% from top of content area
         logo,
         _sp(16),
@@ -573,7 +567,6 @@ def _cover_page_flowables(domain: str, overall: int, grade_letter: str,
         ScoreLegend(width=460),
         PageBreak(),
     ]
-    return out
 
 
 # ─── MAIN GENERATOR ───────────────────────────────────────────────────────────
@@ -582,10 +575,14 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
     """Generate the full branded PDF audit report.
 
     Args:
-        audit: The session_state["_audit"] dict.
+        audit: The session_state["_audit"] dict — contains everything the UI
+               renders, including js_results, schema_results, robots_result,
+               llm_result, semantic_results, security_result, bot_crawl_results,
+               and the AI analysis cache (_bifrost_js, _bifrost_robots,
+               _bifrost_schema, _bifrost_llm, _bifrost_sem, pattern_brain).
         domain: Domain string for the header (e.g. "okanui.com").
-        recs:   List of recommendation items. Each item may be a 3-tuple
-                (severity, pillar, text) or a dict with keys severity/pillar/text.
+        recs:   List of (severity, pillar, text) tuples from the recommendations
+                builder. Also accepts dicts with severity/pillar/text keys.
 
     Returns:
         PDF file bytes.
@@ -642,13 +639,13 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
 
     story: list = []
 
-    # ── 1. COVER PAGE ─────────────────────────────────────────────────────────
+    # ── 1. COVER PAGE ────────────────────────────────────────────────────────
     story.extend(_cover_page_flowables(domain, overall, grade_letter, grade_label))
 
     # ── 2. PILLAR SCORE TABLE (page 2) ───────────────────────────────────────
     story.append(_sp(12))
     story.append(Paragraph("Pillar Scores", _S_H2()))
-    story.append(_sp(2))
+    story.append(_sp(6))
 
     pillar_rows = [["Pillar", "Score Bar", "%", "Grade"]]
     for pname, psc in pillar_scores.items():
@@ -657,44 +654,46 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
         pillar_rows.append([
             Paragraph(pname, _style(f"pn_{pname}", fontSize=9, textColor=C_WHITE,
                                     fontName="Helvetica-Bold")),
-            ScoreBar(psc, width=180, height=5),
+            ScoreBar(psc, width=160, height=5),
             Paragraph(f'<font color="#{sc_color.hexval()[2:]}"><b>{psc}%</b></font>',
                       _style(f"pp_{pname}", fontSize=9, alignment=TA_CENTER)),
             Paragraph(f'<font color="#{sc_color.hexval()[2:]}"><b>{gl}</b></font>',
                       _style(f"pg_{pname}", fontSize=10, alignment=TA_CENTER,
                              fontName="Helvetica-Bold")),
         ])
-    pt = Table(pillar_rows, colWidths=[160, 220, 40, 40])
+    pt = Table(pillar_rows, colWidths=[170, 180, 50, 50])
     pt.setStyle(_table_header_style())
     story.append(pt)
-    story.append(_sp(8))
+    story.append(_sp(12))
 
     # ── 3. STRONGEST / WEAKEST ───────────────────────────────────────────────
     sw_table = Table([[
         Paragraph(
             f'<font color="#{C_MUTED.hexval()[2:]}" size="7"><b>STRONGEST PILLAR</b></font><br/>'
+            f'<br/>'
             f'<font color="#{_score_color(strongest[1]).hexval()[2:]}" size="11"><b>{strongest[0]}</b></font>'
             f'<font color="#{C_WHITE.hexval()[2:]}" size="11"> — {strongest[1]}%</font>',
             _style("strong", fontSize=9, leading=14)),
         Paragraph(
             f'<font color="#{C_MUTED.hexval()[2:]}" size="7"><b>PRIORITY FOCUS</b></font><br/>'
+            f'<br/>'
             f'<font color="#{_score_color(weakest[1]).hexval()[2:]}" size="11"><b>{weakest[0]}</b></font>'
             f'<font color="#{C_WHITE.hexval()[2:]}" size="11"> — {weakest[1]}%</font>',
             _style("weak", fontSize=9, leading=14)),
-    ]], colWidths=[230, 230])
+    ]], colWidths=[225, 225])
     sw_table.setStyle(TableStyle([
         ("BACKGROUND",   (0, 0), (0, 0),  C_CARD),
         ("BACKGROUND",   (1, 0), (1, 0),  C_CARD),
         ("LINEBEFORE",   (0, 0), (0, 0),  3, _score_color(strongest[1])),
         ("LINEBEFORE",   (1, 0), (1, 0),  3, _score_color(weakest[1])),
-        ("LEFTPADDING",  (0, 0), (-1, -1), 12),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 12),
-        ("TOPPADDING",   (0, 0), (-1, -1), 10),
-        ("BOTTOMPADDING",(0, 0), (-1, -1), 10),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 14),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+        ("TOPPADDING",   (0, 0), (-1, -1), 14),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 14),
         ("VALIGN",       (0, 0), (-1, -1), "TOP"),
     ]))
     story.append(sw_table)
-    story.append(_sp(10))
+    story.append(_sp(12))
 
     # ── 4. ANTI-BOT / CLOUDFLARE CALLOUT ─────────────────────────────────────
     cf = robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}
@@ -732,19 +731,19 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
     story.append(PageBreak())
     story.append(_sp(12))
     story.append(Paragraph("Per-Page Results", _S_H2()))
-    story.append(_sp(2))
+    story.append(_sp(4))
     story.append(Paragraph(
-        "Per-pillar checks run on a representative page from each template. "
-        "Empty cells (·) indicate the pillar wasn't audited on that page type — "
-        "see the detailed analysis for full results.",
+        "Per-pillar checks run on a representative page from each template — empty "
+        "cells indicate the pillar wasn't audited on that page type. See the "
+        "detailed analysis below for full results.",
         _style("pp_note", fontSize=8, textColor=C_MUTED, fontName="Helvetica",
-               leading=11, spaceAfter=4)))
+               leading=12, spaceAfter=4)))
     story.append(_sp(2))
 
     pp_rows = [["Page", "URL", "JS", "Schema", "Semantic"]]
     for url_key, label in url_labels.items():
-        js_s  = js_results.get(url_key, {}).get("score", None)
-        sc_s  = schema_results.get(url_key, {}).get("score", None)
+        js_s  = js_results.get(url_key, {}).get("score")
+        sc_s  = schema_results.get(url_key, {}).get("score")
         sem_r = semantic_results.get(url_key, {})
         if sem_r and not sem_r.get("error"):
             ps = 100
@@ -759,7 +758,7 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
             sem_s = None
 
         def _cell(v):
-            if v is None:
+            if not isinstance(v, int):
                 # Muted dot instead of dash
                 return Paragraph(
                     f'<font color="#{C_MUTED.hexval()[2:]}" size="10">·</font>',
@@ -778,16 +777,16 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
     ppt = Table(pp_rows, colWidths=[70, 250, 45, 45, 45])
     ppt.setStyle(_table_header_style())
     story.append(ppt)
-    story.append(_sp(10))
+    story.append(_sp(16))
 
     # ── 8. PRIORITY RECOMMENDATIONS ──────────────────────────────────────────
     story.append(Paragraph("Priority Recommendations", _S_H2()))
-    story.append(_sp(4))
+    story.append(_sp(8))
     if not recs:
         story.append(_status_dot("Excellent! Your site scores well across all pillars.", "success"))
     else:
         for i, rec in enumerate(recs, 1):
-            # Support both tuple (severity, pillar, text) and dict forms
+            # Support both (severity, pillar, text) tuples and dict form
             if isinstance(rec, dict):
                 severity = rec.get("severity", "warning")
                 pillar   = rec.get("pillar", "")
@@ -798,35 +797,37 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
                 except (TypeError, ValueError):
                     severity, pillar, text = "warning", "", str(rec)
 
-            # Map severity to colour and kicker label
+            # Map severity → colour and kicker label
             sev_lower = (severity or "warning").lower()
-            if sev_lower == "critical":
-                color = C_DANGER
+            if sev_lower in ("critical", "danger"):
+                color     = C_DANGER
                 sev_label = "CRITICAL"
             elif sev_lower == "info":
-                color = C_PRIMARY
+                color     = C_PRIMARY
                 sev_label = "RECOMMENDATION"
             else:
-                color = C_WARN
+                color     = C_WARN
                 sev_label = "WARNING"
 
             rec_para = Paragraph(
                 f'<font color="#{color.hexval()[2:]}" size="7"><b>{sev_label} · {pillar.upper()}</b></font><br/>'
+                f'<br/>'
                 f'<font color="#{C_WHITE.hexval()[2:]}" size="9">{i}. {text}</font>',
-                _style(f"rec_{i}", fontSize=9, leading=14, spaceAfter=4))
+                _style(f"rec_{i}", fontSize=9, leading=14))
             box = Table([[rec_para]], colWidths=[460])
             box.setStyle(TableStyle([
                 ("BACKGROUND",   (0, 0), (-1, -1), C_CARD),
                 ("LINEBEFORE",   (0, 0), (0, -1),  3, color),
                 ("LEFTPADDING",  (0, 0), (-1, -1), 12),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 12),
-                ("TOPPADDING",   (0, 0), (-1, -1), 8),
-                ("BOTTOMPADDING",(0, 0), (-1, -1), 8),
+                ("TOPPADDING",   (0, 0), (-1, -1), 10),
+                ("BOTTOMPADDING",(0, 0), (-1, -1), 10),
             ]))
             story.append(box)
-            story.append(_sp(4))
+            if i < len(recs):
+                story.append(_sp(8))
 
-    # ── DETAILED ANALYSIS DIVIDER ────────────────────────────────────────────
+    # ── DETAILED ANALYSIS DIVIDER ─────────────────────────────────────────────
     story.extend(_detailed_analysis_divider())
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -885,6 +886,7 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
                 pct_color = _score_color(pct)
                 vis_para = Paragraph(
                     f'<font color="#{C_MUTED.hexval()[2:]}" size="7"><b>CONTENT VISIBILITY</b></font><br/>'
+                    f'<br/>'
                     f'<font color="#{pct_color.hexval()[2:]}" size="14"><b>{pct}%</b></font>'
                     f'<font color="#{C_WHITE.hexval()[2:]}" size="9"> visible to AI crawlers</font><br/>'
                     f'<font color="#{C_MUTED.hexval()[2:]}" size="8">'
@@ -897,11 +899,11 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
                     ("LINEBEFORE",   (0, 0), (0, -1),  3, pct_color),
                     ("LEFTPADDING",  (0, 0), (-1, -1), 14),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 14),
-                    ("TOPPADDING",   (0, 0), (-1, -1), 8),
-                    ("BOTTOMPADDING",(0, 0), (-1, -1), 8),
+                    ("TOPPADDING",   (0, 0), (-1, -1), 12),
+                    ("BOTTOMPADDING",(0, 0), (-1, -1), 12),
                 ]))
                 story.append(box)
-                story.append(_sp(4))
+                story.append(_sp(6))
 
         for fname, fsev, fnote in (js_r.get("frameworks") or []):
             sev_kind = "danger" if fsev == "high" else "warning"
@@ -932,7 +934,6 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
         if ai_results:
             story.append(_sp(6))
             story.append(Paragraph("AI Bot Access (per robots.txt):", _S_H3()))
-            story.append(_sp(2))
             bot_rows = [["Bot", "Company", "Status"]]
             for bn, info in ai_results.items():
                 allowed = info.get("robots_allowed", info.get("allowed"))
@@ -1010,12 +1011,9 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
 
         for v in validations:
             comp_pct = v.get("completeness", 0)
-            if comp_pct >= 80:
-                kind = "success"
-            elif comp_pct >= 50:
-                kind = "warning"
-            else:
-                kind = "danger"
+            if comp_pct >= 80:   kind = "success"
+            elif comp_pct >= 50: kind = "warning"
+            else:                kind = "danger"
             text = f"<b>{v.get('type', '?')}</b> — {comp_pct}% complete"
             if v.get("missing"):
                 text += f" · Missing: {', '.join(v['missing'][:5])}"
@@ -1033,7 +1031,7 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
             story.append(_status_dot(f"Meta description: {desc_len} chars",
                                      "success" if 100 <= desc_len <= 160 else "warning"))
             if canon and meta_data.get("canonical_matches_url"):
-                story.append(_status_dot(f"Canonical matches URL", "success"))
+                story.append(_status_dot("Canonical matches URL", "success"))
             elif canon:
                 story.append(_status_dot(f"Canonical mismatch — {canon[:60]}", "danger"))
             else:
@@ -1175,31 +1173,33 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
         ]:
             items = sec_findings.get(cat, []) or []
             if items:
-                story.append(_sp(2))
+                story.append(_sp(8))
                 story.append(Paragraph(
                     f'<font color="#{C_WARN.hexval()[2:] if kind == "warning" else C_DANGER.hexval()[2:]}"><b>{cat_label}:</b></font>',
                     _style(f"sec_cat_{cat}", fontSize=9, textColor=C_WHITE,
-                           fontName="Helvetica", leading=13, spaceAfter=2,
-                           spaceBefore=8)))
+                           fontName="Helvetica", leading=14, spaceAfter=2, spaceBefore=8)))
+                story.append(_sp(2))
                 for f in items:
                     story.append(_status_dot(
                         f"{f['path']} — HTTP {f['status']} ({f.get('size', 0):,} bytes)", kind))
 
         if sec_findings.get("html_exposure"):
-            story.append(_sp(2))
+            story.append(_sp(8))
             story.append(Paragraph(
                 f'<font color="#{C_WARN.hexval()[2:]}"><b>Sensitive content in HTML source:</b></font>',
                 _style("sec_html", fontSize=9, textColor=C_WHITE,
-                       fontName="Helvetica", leading=13, spaceAfter=2, spaceBefore=8)))
+                       fontName="Helvetica", leading=14, spaceAfter=2, spaceBefore=8)))
+            story.append(_sp(2))
             for item in sec_findings["html_exposure"]:
                 story.append(_status_dot(item, "warning"))
 
         if sec_findings.get("robots_allowlist"):
-            story.append(_sp(2))
+            story.append(_sp(8))
             story.append(Paragraph(
                 f'<font color="#{C_WARN.hexval()[2:]}"><b>robots.txt allows sensitive paths for AI bots:</b></font>',
                 _style("sec_robots", fontSize=9, textColor=C_WHITE,
-                       fontName="Helvetica", leading=13, spaceAfter=2, spaceBefore=8)))
+                       fontName="Helvetica", leading=14, spaceAfter=2, spaceBefore=8)))
+            story.append(_sp(2))
             for item in sec_findings["robots_allowlist"]:
                 story.append(_status_dot(f"{item['bot']}: {item['path']}", "warning"))
 
@@ -1218,7 +1218,7 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
             f'<font color="#{C_DANGER.hexval()[2:]}"><b>{total_n - allowed_n}</b></font>'
             f'<font color="#{C_MUTED.hexval()[2:]}"> blocked · {total_n} total</font>',
             _S_BODY()))
-        story.append(_sp(4))
+        story.append(_sp(8))
 
         bc_rows = [["Bot", "Company", "Status", "HTTP", "Load"]]
         for bn, r in bot_crawl.items():
@@ -1250,7 +1250,7 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
         story.append(bct)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # FOOTER
+    # FOOTER (last flowable on the document body)
     # ─────────────────────────────────────────────────────────────────────────
     story.append(_sp(20))
     story.append(_thin_divider())
@@ -1262,7 +1262,7 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
         f'</font>',
         _style("ft", fontSize=8, alignment=TA_CENTER, leading=12)))
 
-    # ── Page background + footer ───────────────────────────────────────────────
+    # ── Page background + page numbers ────────────────────────────────────────
     def _on_page(canvas, doc_):
         canvas.saveState()
         canvas.setFillColor(C_BG)
