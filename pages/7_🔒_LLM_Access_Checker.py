@@ -19,6 +19,7 @@ import base64
 import io
 import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from report_pdf import generate_report_pdf as _generate_report_pdf
 
 # ─── JSON SERIALIZATION HELPER ────────────────────────────────────────────────
 def _make_json_safe(obj):
@@ -499,396 +500,6 @@ def check_semantic_hierarchy(url):
     results["text_length"] = len(soup.get_text(separator=" ", strip=True))
     return results
 
-def generate_report_html(domain, overall, pillar_scores, url_labels, js_results, llm_result, robots_result, schema_results, semantic_results, bot_crawl_results, recs):
-    """Generate a self-contained branded HTML report matching the live app design."""
-    B = BRAND  # shorthand
-    _ss = st.session_state.get("_audit", {})
-    _bifrost_js     = _ss.get("_bifrost_js", {})
-    _bifrost_robots = _ss.get("_bifrost_robots")
-    _bifrost_schema = _ss.get("_bifrost_schema", {})
-    _bifrost_llm    = _ss.get("_bifrost_llm")
-    _bifrost_sem    = _ss.get("_bifrost_sem", {})
-    _brain          = _ss.get("pattern_brain")
-    _security       = _ss.get("security_result", {})
-    _no_blog        = _ss.get("no_blog", False)
-
-    def _ai_block(text):
-        return f'<div style="background:{B["bg_card"]};border:1px solid {B["border"]};border-left:3px solid {B["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;margin:12px 0;"><div style="font-size:11px;color:{B["text_secondary"]};text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">AI Analysis</div><div style="color:{B["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{text}</div></div>'
-
-    def _score_color(s):
-        return B["teal"] if s >= 75 else B["primary"] if s >= 50 else B["warning"] if s >= 35 else B["danger"]
-
-    def _grade(s):
-        for t, (l, lb) in sorted({90:("A","Excellent"),75:("B","Good"),60:("C","Fair"),40:("D","Needs Work"),0:("F","Critical")}.items(), reverse=True):
-            if s >= t: return l, lb
-        return "F", "Critical"
-
-    def _score_bar(score):
-        c = _score_color(score)
-        return f'<div style="background:{B["border"]};border-radius:8px;height:8px;margin:8px 0 4px 0;"><div style="width:{score}%;background:linear-gradient(90deg,{B["purple"]},{c});height:8px;border-radius:8px;"></div></div>'
-
-    def _pill(text, color):
-        return f'<span style="display:inline-block;background:{color}20;color:{color};padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700;letter-spacing:0.5px;margin-right:6px;">{text}</span>'
-
-    def _status(text, status):
-        c = {"success":B["teal"],"warning":B["warning"],"danger":B["danger"],"info":B["primary"]}.get(status, B["primary"])
-        return f'<div style="display:flex;align-items:center;gap:8px;margin:4px 0;"><div style="width:8px;height:8px;border-radius:50%;background:{c};flex-shrink:0;"></div><span style="color:{B["white"]};font-size:13px;">{text}</span></div>'
-
-    def _card(content, accent=None):
-        border = f"border-left:3px solid {accent};" if accent else ""
-        return f'<div style="background:{B["bg_card"]};border:1px solid {B["border"]};{border}border-radius:{"0 10px 10px 0" if accent else "10px"};padding:14px 18px;margin:8px 0;">{content}</div>'
-
-    def _pillar_header(num, title, score):
-        sc = _score_color(score)
-        return f'''<div style="margin-top:36px;">
-  <div style="font-size:10px;color:{B["text_secondary"]};text-transform:uppercase;letter-spacing:2px;margin-bottom:2px;">Pillar {num}</div>
-  <div style="display:flex;align-items:center;justify-content:space-between;">
-    <div style="font-size:22px;font-weight:800;color:{B["white"]};">{title}</div>
-    <div style="font-size:28px;font-weight:800;color:{B["white"]};">{score}<span style="font-size:14px;opacity:0.4;">/100</span></div>
-  </div>
-  {_score_bar(score)}
-  <div style="height:1px;background:linear-gradient(90deg,{B["purple"]},{B["primary"]},transparent);margin-bottom:16px;"></div>
-</div>'''
-
-    def _section_header(title, level="SITE-LEVEL"):
-        color = B["purple"] if level == "SITE-LEVEL" else B["primary"]
-        return f'<div style="margin-top:36px;"><div style="font-size:22px;font-weight:800;color:{B["white"]};margin-bottom:4px;">{title}</div>{_pill(level, color)}<div style="height:1px;background:linear-gradient(90deg,{B["purple"]},{B["primary"]},transparent);margin:10px 0 16px 0;"></div></div>'
-
-    def _page_block(label, score=None):
-        sc_html = ""
-        if score is not None:
-            sc = _score_color(score)
-            sc_html = f' <span style="color:{sc};font-size:14px;">{score}/100</span>'
-        return f'<div style="font-size:16px;font-weight:700;color:{B["white"]};margin:20px 0 6px 0;">{label}{sc_html}</div>'
-
-    sorted_pillars = sorted(pillar_scores.items(), key=lambda x: x[1])
-    weakest, strongest = sorted_pillars[0], sorted_pillars[-1]
-    grade_letter, grade_label = _grade(overall)
-    grade_color = _score_color(overall)
-
-    # ── Pillar score rows ────────────────────────────────────────────────
-    pillar_rows = ""
-    for i, (name, score) in enumerate(pillar_scores.items()):
-        g, _ = _grade(score)
-        c = _score_color(score)
-        bg = B["bg_surface"] if i % 2 == 0 else B["bg_card"]
-        bar = f'<div style="background:{B["border"]};border-radius:4px;height:6px;width:100%;"><div style="width:{score}%;background:linear-gradient(90deg,{B["purple"]},{c});height:6px;border-radius:4px;"></div></div>'
-        pillar_rows += f'<tr style="background:{bg};"><td style="padding:10px 16px;color:{B["white"]};font-weight:600;">{name}</td><td style="padding:10px 16px;width:200px;">{bar}</td><td style="padding:10px 16px;text-align:center;font-weight:700;color:{c};">{score}%</td><td style="padding:10px 16px;text-align:center;color:{c};font-weight:700;">{g}</td></tr>'
-
-    # ── Pillar 1: JS Rendering ───────────────────────────────────────────
-    js_sec = _pillar_header(1, "JavaScript Rendering", pillar_scores.get("JS Rendering", 0))
-    js_sec += _pill("PAGE-LEVEL", B["primary"])
-    js_sec += f'<span style="color:{B["text_secondary"]};font-size:12px;"> Checked on each of your {len(js_results)} pages</span>'
-    for test_url, js_r in js_results.items():
-        lbl = url_labels.get(test_url, test_url)
-        if js_r.get("error"):
-            js_sec += _card(f'<span style="color:{B["danger"]};">{lbl}: ERROR — {js_r["error"]}</span>'); continue
-        score = js_r.get("score", 0)
-        js_sec += _page_block(lbl, score)
-        comp = js_r.get("comparison")
-        if comp:
-            js_sec += f'<div style="font-weight:700;color:{B["white"]};font-size:14px;margin:12px 0 6px 0;">HTML vs JavaScript — What AI Crawlers Miss:</div>'
-            js_sec += f'<table style="width:100%;border-collapse:collapse;font-size:13px;"><tr style="background:{B["bg_surface"]};"><th style="padding:7px 10px;text-align:left;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;letter-spacing:1px;">Content</th><th style="padding:7px 10px;text-align:center;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;">HTML (Crawler)</th><th style="padding:7px 10px;text-align:center;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;">JS (Browser)</th><th style="padding:7px 10px;text-align:left;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;">Impact</th></tr>'
-            for c in comp["comparison"]:
-                if not c.get("name"):
-                    continue
-                if c["status"] == "missing":
-                    bg = f"{B['danger']}15"; sc = B["danger"]; label = "MISSING"
-                elif c["status"] == "warn":
-                    bg = f"{B['warning']}10"; sc = B["warning"]; label = "MINOR GAP"
-                else:
-                    bg = "transparent"; sc = B["teal"]; label = "OK"
-                impact = f'<span style="color:{sc};font-weight:600;">{label}</span>'
-                js_sec += f'<tr style="background:{bg};border-bottom:1px solid {B["border"]};"><td style="padding:5px 10px;color:{B["white"]};">{c["name"]}</td><td style="padding:5px 10px;text-align:center;color:{sc};">{c["html_val"]}</td><td style="padding:5px 10px;text-align:center;color:{B["teal"]};">{c["js_val"]}</td><td style="padding:5px 10px;">{impact}</td></tr>'
-            js_sec += '</table>'
-            html_t = comp["html_summary"]["text_content_length"]
-            js_t   = comp["js_summary"]["text_content_length"]
-            if js_t > html_t:
-                pct = round(html_t / max(js_t, 1) * 100)
-                pct_c = B["danger"] if pct < 30 else B["warning"] if pct < 70 else B["teal"]
-                js_sec += _card(f'<div style="font-size:10px;color:{B["text_secondary"]};text-transform:uppercase;letter-spacing:1px;">Content Visibility</div><div style="font-size:22px;font-weight:800;color:{pct_c};">{pct}% <span style="font-size:13px;opacity:0.5;">of content visible to AI</span></div><div style="font-size:12px;color:{B["text_secondary"]};">HTML: {html_t:,} chars · JS-rendered: {js_t:,} chars · Hidden: {js_t-html_t:,} chars</div>')
-        if js_r.get("frameworks"):
-            for name2, sev, note in js_r["frameworks"]:
-                js_sec += _status(f"<strong>{name2}</strong> ({sev}) — {note}", "danger" if sev == "high" else "warning")
-        if not comp and js_r.get("risk_factors"):
-            for rf in js_r["risk_factors"]:
-                js_sec += _status(rf, "warning")
-        if _bifrost_js.get(test_url):
-            js_sec += _ai_block(_bifrost_js[test_url])
-
-    # ── Pillar 2: Robots & Crawlability ─────────────────────────────────
-    rob_sec = _pillar_header(2, "Robots.txt &amp; Crawler Access", pillar_scores.get("Robots & Crawl", 0))
-    rob_sec += _pill("SITE-LEVEL", B["purple"])
-    rob_sec += f'<span style="color:{B["text_secondary"]};font-size:12px;"> Checked once — controls all crawler access</span><br><br>'
-    if robots_result.get("found"):
-        rob_sec += _status("robots.txt found", "success")
-        ai_res = robots_result.get("ai_agent_results", robots_result.get("ai_results", {}))
-        rob_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 6px 0;">AI Agent Access:</div>'
-        for bn, info in ai_res.items():
-            av = info.get("robots_allowed", info.get("allowed"))
-            rob_sec += _status(f"<strong>{bn}</strong>: {'Allowed' if av is True else 'BLOCKED' if av is False else 'Unknown'}", "success" if av is True else "danger" if av is False else "warning")
-        if robots_result.get("sitemaps"):
-            rob_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 6px 0;">Sitemaps ({len(robots_result["sitemaps"])}):</div>'
-            for sm in robots_result["sitemaps"]:
-                rob_sec += _status(sm, "success")
-        if robots_result.get("blocked_resources"):
-            rob_sec += _status(f"CSS/JS blocked: {', '.join(robots_result['blocked_resources'])}", "danger")
-        else:
-            rob_sec += _status("CSS/JS not blocked — AI agents can render pages", "success")
-        exposed = [(p, r) for p, r in robots_result.get("sensitive_paths", {}).items() if not r.get("blocked", not r.get("accessible_per_robots", False))]
-        if exposed:
-            rob_sec += f'<div style="font-weight:600;color:{B["warning"]};margin:12px 0 6px 0;">No Disallow rule — {len(exposed)} path(s) not covered in robots.txt:</div>'
-            rob_sec += f'<div style="font-size:11px;color:{B["text_secondary"]};margin-bottom:6px;">(These paths may still be inaccessible via HTTP — see the Security section for actual exposure)</div>'
-            for path, _ in exposed:
-                rob_sec += _status(path, "info")
-    else:
-        rob_sec += _status("No robots.txt found", "danger")
-    cf = robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}
-    if cf.get("bot_fight_mode_likely") or (cf.get("cloudflare_detected") and cf.get("blocked_bots")):
-        blocked_bots = cf.get("blocked_bots", [])
-        rob_sec += f'<div style="background:{B["danger"]}20;border:1px solid {B["danger"]};border-radius:10px;padding:14px 18px;margin:12px 0;"><strong style="color:{B["danger"]};">⚠ Anti-Bot Protection Active</strong><div style="color:{B["white"]};font-size:13px;margin-top:4px;">Cloudflare is blocking AI crawlers: {", ".join(blocked_bots)}. This overrides robots.txt.</div></div>'
-    if _bifrost_robots:
-        rob_sec += _ai_block(_bifrost_robots)
-
-    # ── Pillar 3: Schema & Entity ────────────────────────────────────────
-    schema_sec = _pillar_header(3, "Schema &amp; Entity", pillar_scores.get("Schema & Entity", 0))
-    schema_sec += _pill("PAGE-LEVEL", B["primary"])
-    schema_sec += f'<span style="color:{B["text_secondary"]};font-size:12px;"> Checked on each of your {len(schema_results)} pages</span>'
-    for test_url, sr in schema_results.items():
-        lbl = url_labels.get(test_url, test_url)
-        if sr.get("error"):
-            schema_sec += _card(f'<span style="color:{B["danger"]};">{lbl}: ERROR</span>'); continue
-        schema_data = sr.get("schema", {})
-        schemas = schema_data.get("schemas", [])
-        types = schema_data.get("types", [])
-        validations = schema_data.get("validations", [])
-        grade2 = sr.get("grade", {})
-        gl = grade2.get("letter", "?") if isinstance(grade2, dict) else "?"
-        sc = sr.get("score", 0)
-        schema_sec += _page_block(lbl, sc)
-        if types:
-            schema_sec += '<div style="margin:6px 0;">' + "".join(_pill(t, B["chart"][i % len(B["chart"])]) for i, t in enumerate(types)) + '</div>'
-        ess_found   = schema_data.get("essential_found", [])
-        ess_missing = schema_data.get("essential_missing", [])
-        if ess_found:
-            schema_sec += _status(f"Essential found: {', '.join(ess_found)}", "success")
-        if ess_missing:
-            schema_sec += _status(f"Essential missing: {', '.join(ess_missing)}", "warning")
-        for v in validations:
-            comp2 = v.get("completeness", 0)
-            st3 = "success" if comp2 >= 80 else "warning" if comp2 >= 50 else "danger"
-            schema_sec += _status(f"<strong>{v.get('type','?')}</strong>: {comp2}% complete" + (f" — Missing: {', '.join(v['missing'])}" if v.get('missing') else ""), st3)
-        meta_data = sr.get("meta", {})
-        if meta_data:
-            title = meta_data.get("title", "")
-            desc_len = meta_data.get("desc_len", 0)
-            schema_sec += _status(f"Title ({len(title)} chars): {title[:80]}", "success" if title else "danger")
-            schema_sec += _status(f"Meta description: {desc_len} chars", "success" if 100 <= desc_len <= 160 else "warning")
-            canon = meta_data.get("canonical", "")
-            if not canon:
-                schema_sec += _status("Canonical: Missing", "warning")
-            elif meta_data.get("canonical_matches_url"):
-                schema_sec += _status(f"Canonical: Matching — {canon[:80]}", "success")
-            else:
-                schema_sec += _status(f"Canonical: Not matching — {canon[:80]}", "danger")
-            if meta_data.get("was_redirected"):
-                schema_sec += _status(f"Redirect detected — fetched: {meta_data.get('final_url','')[:80]}", "warning")
-        if not schemas:
-            schema_sec += _status("No Schema.org structured data found", "warning")
-        if _bifrost_schema.get(test_url):
-            schema_sec += _ai_block(_bifrost_schema[test_url])
-
-    # ── Pillar 4: AI Discoverability ─────────────────────────────────────
-    llm_sec = _pillar_header(4, "AI Discoverability", pillar_scores.get("AI Discoverability", 0))
-    llm_sec += _pill("SITE-LEVEL", B["purple"])
-    llm_sec += f'<span style="color:{B["text_secondary"]};font-size:12px;"> llm.txt files + AI Info Page</span><br><br>'
-    llm_txt_data = llm_result.get("llm_txt", llm_result.get("files", {}))
-    llm_sec += f'<div style="font-weight:600;color:{B["white"]};margin:8px 0 6px 0;">llm.txt Files:</div>'
-    for path, info in llm_txt_data.items():
-        llm_sec += _status(f"{path}: {'Found' if info.get('found') else 'Not found'}", "success" if info.get("found") else "warning")
-    ai_info = llm_result.get("ai_info_page", {})
-    llm_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 6px 0;">AI Info Page:</div>'
-    if ai_info.get("found"):
-        llm_sec += _status(f"Found: {ai_info.get('url','')}", "success")
-        llm_sec += _status(f"Linked from footer: {'Yes' if ai_info.get('linked_from_footer') else 'No'}", "success" if ai_info.get("linked_from_footer") else "danger")
-        if "indexable" in ai_info:
-            llm_sec += _status(f"Indexable: {'Yes' if ai_info['indexable'] else 'No — has noindex'}", "success" if ai_info.get("indexable") else "danger")
-    else:
-        if ai_info.get("redirects"):
-            llm_sec += _status("AI Info Page URL redirects elsewhere — page does not exist", "danger")
-        else:
-            llm_sec += _status("No AI Info Page found at /ai-info or similar", "warning")
-    wellknown = llm_result.get("wellknown", {})
-    if wellknown:
-        llm_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 6px 0;">AI Policy Files (/.well-known/):</div>'
-        for path, info in wellknown.items():
-            llm_sec += _status(path, "success" if info.get("found") else "info")
-    if _bifrost_llm:
-        llm_sec += _ai_block(_bifrost_llm)
-    if _no_blog:
-        llm_sec += f'<div style="background:{B["warning"]}15;border:1px solid {B["warning"]};border-radius:10px;padding:12px 16px;margin:12px 0;color:{B["white"]};font-size:13px;"><strong style="color:{B["warning"]};">No Blog Audited</strong> — AI systems preferentially cite brands with editorial content. Consider a blog, resource hub, or thought-leadership section.</div>'
-
-    # ── Semantic Hierarchy ───────────────────────────────────────────────
-    sem_sec = _section_header("Semantic Hierarchy &amp; Content Structure", "PAGE-LEVEL")
-    for test_url, sem_r in semantic_results.items():
-        lbl = url_labels.get(test_url, test_url)
-        if sem_r.get("error"):
-            sem_sec += _card(f'<span style="color:{B["danger"]};">{lbl}: ERROR</span>'); continue
-        sem_sec += _page_block(lbl)
-        hier_ok = sem_r.get("hierarchy_ok", True)
-        sem_sec += _status(f"Heading hierarchy: {'Valid — no skipped levels' if hier_ok else 'Issues — skipped levels detected'}", "success" if hier_ok else "warning")
-        sem_elems = sem_r.get("semantic_elements", {})
-        if sem_elems:
-            for tag, count in sem_elems.items():
-                sem_sec += _status(f"&lt;{tag}&gt;: {count}", "success")
-        else:
-            sem_sec += _status("No semantic HTML5 elements found", "warning")
-        meta_tags = sem_r.get("meta_tags", [])
-        for tag in meta_tags:
-            sem_sec += _status(f'{tag["name"]}: {tag["content"]}', "info")
-        nosnip = sem_r.get("nosnippet_elements", 0)
-        sem_sec += _status(f"data-nosnippet: {nosnip} element(s)", "info")
-        html_len = sem_r.get("html_length", 0)
-        text_len = sem_r.get("text_length", 0)
-        if html_len > 0:
-            ratio = text_len / html_len * 100
-            sem_sec += _status(f"Text-to-HTML ratio: {ratio:.1f}%", "success" if ratio >= 15 else "warning")
-        if _bifrost_sem.get(test_url):
-            sem_sec += _ai_block(_bifrost_sem[test_url])
-
-    # ── Live Bot Crawl ───────────────────────────────────────────────────
-    bot_sec = ""
-    if bot_crawl_results:
-        bot_sec = _section_header("Live Bot Crawl Results", "SITE-LEVEL")
-        allowed_n = sum(1 for r in bot_crawl_results.values() if r.get("is_allowed"))
-        total_n = len(bot_crawl_results)
-        bot_sec += f'<div style="font-size:14px;color:{B["text_secondary"]};margin-bottom:12px;"><span style="color:{B["teal"]};font-weight:700;">{allowed_n}</span> allowed · <span style="color:{B["danger"]};font-weight:700;">{total_n - allowed_n}</span> blocked · {total_n} total</div>'
-        for company in list(dict.fromkeys(r["company"] for r in bot_crawl_results.values())):
-            cr = {k: v for k, v in bot_crawl_results.items() if v["company"] == company}
-            ca = sum(1 for r in cr.values() if r.get("is_allowed"))
-            bot_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 4px 0;">{company} — {ca}/{len(cr)} allowed</div>'
-            for bn, r in cr.items():
-                if r.get("error"):
-                    bot_sec += _status(f"<strong>{bn}</strong>: Error — {r['error']}", "danger")
-                else:
-                    bot_sec += _status(f"<strong>{bn}</strong>: {'Allowed' if r['is_allowed'] else 'BLOCKED'} — HTTP {r['status_code']} · {r['content_length']:,} chars · {r['load_time']}s", "success" if r["is_allowed"] else "danger")
-
-    # ── Recommendations ──────────────────────────────────────────────────
-    rec_sec = f'<div style="margin-top:36px;font-size:22px;font-weight:800;color:{B["white"]};margin-bottom:4px;">Priority Recommendations</div><div style="height:1px;background:linear-gradient(90deg,{B["purple"]},{B["primary"]},transparent);margin-bottom:16px;"></div>'
-    for i, (status, pillar, text) in enumerate(recs, 1):
-        c = B["danger"] if status == "danger" else B["warning"]
-        pill = _pill(pillar, c)
-        rec_sec += f'<div style="background:{B["bg_card"]};border:1px solid {B["border"]};border-left:3px solid {c};border-radius:0 10px 10px 0;padding:14px 18px;margin:8px 0;">{pill}<div style="color:{B["white"]};font-size:14px;margin-top:6px;">{text}</div></div>'
-
-    # ── Security section ─────────────────────────────────────────────────
-    sec_sec = _section_header("Security &amp; Exposure", "SITE-LEVEL")
-    sec_findings = _security.get("findings", {})
-    sec_score = _security.get("score", 100)
-    sec_total = _security.get("total_exposed", 0)
-    sec_sec += f'<div style="font-size:13px;color:{B["text_secondary"]};margin-bottom:10px;">Score: <span style="color:{B["teal"] if sec_score >= 75 else B["warning"] if sec_score >= 50 else B["danger"]};font-weight:700;">{sec_score}/100</span></div>'
-    if sec_total == 0 and not sec_findings.get("html_exposure") and not sec_findings.get("robots_allowlist"):
-        sec_sec += _status("No sensitive paths accessible — all probed paths returned 403/404/401", "success")
-    else:
-        for cat, lbl_str, col_key in [("critical", "Critical paths (admin/env/config)", "danger"), ("backend", "Backend paths (API/GraphQL)", "warning"), ("customer", "Customer paths (account/checkout)", "warning")]:
-            items = sec_findings.get(cat, [])
-            if items:
-                sec_sec += f'<div style="font-weight:600;color:{B[col_key]};margin:10px 0 4px 0;">{lbl_str} — accessible to AI bots:</div>'
-                for f in items:
-                    sec_sec += _status(f'{f["path"]} — HTTP {f["status"]} ({f["size"]:,} bytes)', col_key)
-        if sec_findings.get("html_exposure"):
-            sec_sec += f'<div style="font-weight:600;color:{B["warning"]};margin:10px 0 4px 0;">Sensitive content in HTML source:</div>'
-            for item in sec_findings["html_exposure"]:
-                sec_sec += _status(item, "warning")
-        if sec_findings.get("robots_allowlist"):
-            sec_sec += f'<div style="font-weight:600;color:{B["warning"]};margin:10px 0 4px 0;">robots.txt explicitly allows sensitive paths for AI bots:</div>'
-            for item in sec_findings["robots_allowlist"]:
-                sec_sec += _status(f'{item["bot"]}: {item["path"]}', "warning")
-    sec_items = _security.get("items", [])
-    if sec_items:
-        sec_sec += f'<div style="font-weight:600;color:{B["white"]};margin:12px 0 4px 0;">Score breakdown:</div>'
-        for item in sec_items:
-            pts = item.get("points", 0)
-            s = "success" if pts >= 0 else "danger"
-            sec_sec += _status(f'{"+" if pts >= 0 else ""}{pts} pts — {item.get("label", "")}', s)
-
-    # ── Pattern Brain section ────────────────────────────────────────────
-    brain_sec = ""
-    if _brain:
-        brain_sec = f'<div style="margin-top:36px;"><div style="font-size:22px;font-weight:800;color:{B["white"]};margin-bottom:4px;">Pattern Brain — AI Analysis</div><div style="height:1px;background:linear-gradient(90deg,{B["purple"]},{B["primary"]},transparent);margin-bottom:16px;"></div><div style="background:{B["bg_card"]};border:1px solid {B["border"]};border-radius:12px;padding:20px 24px;color:{B["white"]};font-size:14px;line-height:1.7;white-space:pre-wrap;">{_brain}</div></div>'
-
-    # ── Logo SVG (inline for offline use) ────────────────────────────────
-    logo_svg = PATTERN_LOGO_SVG.replace("width=\"180\"", "width=\"140\"").replace("height=\"36\"", "height=\"28\"")
-
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Pattern LLM Access Audit — {domain}</title>
-<style>
-  @media print {{ body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }} .no-print {{ display:none; }} }}
-  * {{ box-sizing: border-box; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:{B["bg_dark"]}; color:{B["white"]}; margin:0; padding:32px 40px; line-height:1.6; font-size:14px; }}
-  h1, h2, h3 {{ margin-top:0; color:{B["white"]}; }}
-  table {{ border-collapse:collapse; width:100%; }}
-  a {{ color:{B["primary"]}; }}
-  @page {{ margin:15mm; size:A4; }}
-</style>
-</head>
-<body>
-
-<!-- ── HEADER ── -->
-<div style="text-align:center;padding:24px 0 20px;border-bottom:3px solid transparent;border-image:linear-gradient(90deg,{B["purple"]},{B["primary"]}) 1;margin-bottom:28px;">
-  <div style="margin-bottom:10px;">{logo_svg}</div>
-  <div style="font-size:11px;text-transform:uppercase;letter-spacing:3px;color:{B["text_secondary"]};margin-bottom:4px;">Full LLM Access Audit</div>
-  <div style="color:{B["text_secondary"]};font-size:13px;margin-top:4px;">{domain} &nbsp;·&nbsp; Generated {time.strftime("%Y-%m-%d %H:%M UTC")}</div>
-</div>
-
-<!-- ── OVERALL SCORE ── -->
-<div style="display:flex;gap:20px;margin-bottom:28px;align-items:flex-start;flex-wrap:wrap;">
-  <div style="background:{B["bg_card"]};border:1px solid {B["border"]};border-radius:14px;padding:24px 32px;text-align:center;min-width:160px;">
-    <div style="font-size:10px;text-transform:uppercase;letter-spacing:2px;color:{B["text_secondary"]};margin-bottom:6px;">LLM Access Audit</div>
-    <div style="font-size:52px;font-weight:800;color:{grade_color};line-height:1;">{overall}%</div>
-    <div style="font-size:13px;color:{B["text_secondary"]};margin:4px 0;">Overall AI Readiness</div>
-    <div style="font-size:16px;font-weight:700;color:{grade_color};">{grade_letter} — {grade_label}</div>
-  </div>
-  <div style="flex:1;min-width:280px;">
-    <table style="width:100%;border-radius:10px;overflow:hidden;">
-      <tr style="background:{B["bg_surface"]};">
-        <th style="padding:8px 14px;text-align:left;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;letter-spacing:1px;">Pillar</th>
-        <th style="padding:8px 14px;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;letter-spacing:1px;width:160px;">Score Bar</th>
-        <th style="padding:8px 14px;text-align:center;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;letter-spacing:1px;width:60px;">%</th>
-        <th style="padding:8px 14px;text-align:center;color:{B["text_secondary"]};font-size:11px;text-transform:uppercase;letter-spacing:1px;width:50px;">Grade</th>
-      </tr>
-      {pillar_rows}
-    </table>
-    <div style="margin-top:10px;font-size:13px;">
-      <span style="color:{B["teal"]};font-weight:600;">▲ Strongest: {strongest[0]} ({strongest[1]}%)</span>
-      &nbsp;·&nbsp;
-      <span style="color:{B["danger"]};font-weight:600;">▼ Priority Focus: {weakest[0]} ({weakest[1]}%)</span>
-    </div>
-  </div>
-</div>
-
-{js_sec}
-{rob_sec}
-{schema_sec}
-{llm_sec}
-{sem_sec}
-{bot_sec}
-{rec_sec}
-{sec_sec}
-{brain_sec}
-
-<!-- ── FOOTER ── -->
-<div style="text-align:center;margin-top:48px;padding-top:16px;border-top:1px solid {B["border"]};color:{B["text_secondary"]};font-size:12px;">
-  {logo_svg}
-  <div style="margin-top:8px;">Pattern LLM Access Checker &nbsp;·&nbsp; Full LLM Access Audit &nbsp;·&nbsp; pattern.com</div>
-</div>
-
-</body>
-</html>"""
-    return html
 
 def generate_report_text(domain, overall, pillar_scores, url_labels, js_results, llm_result, robots_result, schema_results, bot_crawl_results, recs):
     """Generate a plain-text audit report for PDF/download."""
@@ -1111,402 +722,6 @@ def generate_report_text(domain, overall, pillar_scores, url_labels, js_results,
     return "\n".join(lines)
 
 
-def generate_report_pdf(domain, overall, pillar_scores, url_labels, js_results,
-                         llm_result, robots_result, schema_results, semantic_results,
-                         bot_crawl_results, recs):
-    """Generate a formatted PDF audit report using ReportLab. Returns bytes."""
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.colors import HexColor, white, black
-    from reportlab.lib.units import mm
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT
-    import io as _io
-
-    # Use BRAND palette throughout (no separate hardcoded palette)
-    _C_BG      = HexColor(BRAND["bg_dark"])
-    _C_CARD    = HexColor(BRAND["bg_card"])
-    _C_BORDER  = HexColor(BRAND["border"])
-    _C_WHITE   = HexColor(BRAND["white"])
-    _C_MUTED   = HexColor(BRAND["text_secondary"])
-    _C_PRIMARY = HexColor(BRAND["primary"])
-    _C_PURPLE  = HexColor(BRAND["purple"])
-    _C_TEAL    = HexColor(BRAND["teal"])
-    _C_WARN    = HexColor(BRAND["warning"])
-    _C_DANGER  = HexColor(BRAND["danger"])
-    _C_SUCCESS = HexColor(BRAND["teal"])
-
-    _ss = st.session_state.get("_audit", {})
-    _bifrost_js     = _ss.get("_bifrost_js", {})
-    _bifrost_robots = _ss.get("_bifrost_robots")
-    _bifrost_schema = _ss.get("_bifrost_schema", {})
-    _bifrost_llm    = _ss.get("_bifrost_llm")
-    _bifrost_sem    = _ss.get("_bifrost_sem", {})
-    _brain          = _ss.get("pattern_brain")
-    _security       = _ss.get("security_result", {})
-    _no_blog        = _ss.get("no_blog", False)
-
-    buf = _io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=18*mm, rightMargin=18*mm,
-        topMargin=18*mm, bottomMargin=18*mm,
-    )
-
-    styles = getSampleStyleSheet()
-    _style_cache = {}
-    def _style(name, **kw):
-        key = name + str(sorted(kw.items()))
-        if key not in _style_cache:
-            base = styles["Normal"]
-            _style_cache[key] = ParagraphStyle(name + str(len(_style_cache)), parent=base, **kw)
-        return _style_cache[key]
-
-    S_H1    = _style("H1",    fontSize=20, textColor=_C_WHITE,   spaceAfter=4,  fontName="Helvetica-Bold",  alignment=TA_CENTER)
-    S_H2    = _style("H2",    fontSize=14, textColor=_C_WHITE,   spaceAfter=2,  fontName="Helvetica-Bold")
-    S_H3    = _style("H3",    fontSize=11, textColor=_C_PRIMARY, spaceAfter=2,  fontName="Helvetica-Bold")
-    S_BODY  = _style("BODY",  fontSize=9,  textColor=_C_WHITE,   spaceAfter=2,  fontName="Helvetica",       leading=13)
-    S_MUTED = _style("MUTED", fontSize=8,  textColor=_C_MUTED,   spaceAfter=2,  fontName="Helvetica")
-    S_CRIT  = _style("CRIT",  fontSize=9,  textColor=_C_DANGER,  spaceAfter=2,  fontName="Helvetica-Bold")
-    S_WARN  = _style("WARN",  fontSize=9,  textColor=_C_WARN,    spaceAfter=2,  fontName="Helvetica-Bold")
-    S_OK    = _style("OK",    fontSize=9,  textColor=_C_SUCCESS, spaceAfter=2,  fontName="Helvetica-Bold")
-    S_AI    = _style("AI",    fontSize=8,  textColor=_C_MUTED,   spaceAfter=2,  fontName="Helvetica",       leading=12, leftIndent=8)
-
-    def _score_color(sc):
-        if sc >= 75: return _C_TEAL
-        if sc >= 50: return _C_PRIMARY
-        if sc >= 35: return _C_WARN
-        return _C_DANGER
-
-    def _hr():
-        return HRFlowable(width="100%", thickness=1, color=_C_BORDER, spaceAfter=6, spaceBefore=6)
-
-    def _sp(h=4):
-        return Spacer(1, h)
-
-    def _table_style():
-        return TableStyle([
-            ("BACKGROUND",     (0,0), (-1,0),  _C_PRIMARY),
-            ("TEXTCOLOR",      (0,0), (-1,0),  white),
-            ("FONTNAME",       (0,0), (-1,0),  "Helvetica-Bold"),
-            ("FONTSIZE",       (0,0), (-1,0),  8),
-            ("ROWBACKGROUNDS", (0,1), (-1,-1), [_C_BG, _C_CARD]),
-            ("GRID",           (0,0), (-1,-1), 0.5, _C_BORDER),
-            ("LEFTPADDING",    (0,0), (-1,-1), 6),
-            ("TOPPADDING",     (0,0), (-1,-1), 3),
-            ("BOTTOMPADDING",  (0,0), (-1,-1), 3),
-        ])
-
-    def _ai_quote(text):
-        if not text: return []
-        out = [_sp(4), Paragraph("AI Analysis:", _style("ail", fontSize=8, textColor=_C_PRIMARY, fontName="Helvetica-Bold"))]
-        for ln in (text or "").splitlines():
-            if ln.strip():
-                out.append(Paragraph(ln.strip(), S_AI))
-        out.append(_sp(4))
-        return out
-
-    story = []
-
-    # ── Header ────────────────────────────────────────────────────────────────
-    story.append(Paragraph("PATTERN — LLM Access Checker", S_H1))
-    story.append(Paragraph(f"Full LLM Access Audit: {domain}", _style("sub", fontSize=11, textColor=_C_MUTED, alignment=TA_CENTER)))
-    story.append(Paragraph(f"Generated: {time.strftime('%Y-%m-%d %H:%M UTC')}", _style("date", fontSize=8, textColor=_C_MUTED, alignment=TA_CENTER)))
-    story.append(_sp(8))
-    story.append(_hr())
-
-    # ── Overall score ─────────────────────────────────────────────────────────
-    story.append(_sp(4))
-    story.append(Paragraph(f"Overall LLM Readiness Score: {overall}%", _style("ov", fontSize=18, textColor=_score_color(overall), fontName="Helvetica-Bold", alignment=TA_CENTER)))
-    story.append(_sp(8))
-
-    # Pillar score table with score bars
-    _pillar_data = [["Pillar", "Score", "Grade"]]
-    for pname, psc in pillar_scores.items():
-        _pc = _score_color(psc)
-        _gl = "A" if psc >= 85 else "B" if psc >= 70 else "C" if psc >= 50 else "D" if psc >= 35 else "F"
-        _bar = "█" * (psc // 5) + "░" * (20 - psc // 5)
-        _pillar_data.append([
-            Paragraph(pname, _style("pt", fontSize=9, textColor=_C_WHITE, fontName="Helvetica")),
-            Paragraph(f"{_bar}  {psc}%", _style("ps", fontSize=7, textColor=_pc, fontName="Helvetica")),
-            Paragraph(_gl, _style("pg", fontSize=9, textColor=_pc, fontName="Helvetica-Bold")),
-        ])
-    _pt = Table(_pillar_data, colWidths=["30%", "55%", "15%"])
-    _pt.setStyle(_table_style())
-    story.append(_pt)
-    story.append(_sp(8))
-    story.append(_hr())
-
-    # ── Per-page summary table ────────────────────────────────────────────────
-    story.append(Paragraph("Per-Page Results", S_H2))
-    story.append(_sp(4))
-    _pp_data = [["Page", "URL", "JS", "Schema"]]
-    for url_key, label in url_labels.items():
-        _js_s = js_results.get(url_key, {}).get("score", "—")
-        _sc_s = schema_results.get(url_key, {}).get("score", "—")
-        _pp_data.append([
-            Paragraph(label,   _style("pl", fontSize=8, textColor=_C_WHITE, fontName="Helvetica")),
-            Paragraph(url_key, _style("pu", fontSize=7, textColor=_C_MUTED, fontName="Helvetica")),
-            Paragraph(str(_js_s), _style("pj", fontSize=8, textColor=_score_color(_js_s) if isinstance(_js_s, int) else _C_MUTED, fontName="Helvetica-Bold")),
-            Paragraph(str(_sc_s), _style("pk", fontSize=8, textColor=_score_color(_sc_s) if isinstance(_sc_s, int) else _C_MUTED, fontName="Helvetica-Bold")),
-        ])
-    _ppt = Table(_pp_data, colWidths=["18%", "52%", "15%", "15%"])
-    _ppt.setStyle(_table_style())
-    story.append(_ppt)
-    story.append(_sp(8))
-    story.append(_hr())
-
-    # ── Recommendations ───────────────────────────────────────────────────────
-    story.append(Paragraph("Priority Recommendations", S_H2))
-    story.append(_sp(4))
-    for i, (status, pillar, text) in enumerate(recs, 1):
-        sty = S_CRIT if status == "danger" else S_WARN
-        icon = "CRITICAL" if status == "danger" else "WARNING"
-        story.append(Paragraph(f"{i}. [{icon} — {pillar}] {text}", sty))
-        story.append(_sp(2))
-    if _no_blog:
-        story.append(Paragraph("[INFO — Content] No blog audited — AI systems preferentially cite brands with editorial content.", S_WARN))
-        story.append(_sp(2))
-    story.append(_hr())
-
-    # ── Pillar 1: JavaScript Rendering ────────────────────────────────────────
-    js_score = pillar_scores.get("JS Rendering", 0)
-    story.append(Paragraph(f"Pillar 1 — JavaScript Rendering  {js_score}%", S_H2))
-    story.append(Paragraph("PAGE-LEVEL · Checked on each of your pages", _style("jss", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
-    story.append(_sp(4))
-    for test_url, js_r in js_results.items():
-        lbl = url_labels.get(test_url, test_url)
-        if js_r.get("error"):
-            story.append(Paragraph(f"{lbl}: ERROR — {js_r['error']}", S_CRIT)); continue
-        _jsc = _score_color(js_r.get("score", 0))
-        story.append(Paragraph(f"{lbl}: {js_r.get('score',0)}/100", _style("jph", fontSize=10, textColor=_jsc, fontName="Helvetica-Bold")))
-        comp = js_r.get("comparison")
-        if comp:
-            _cmp_rows = [["Content", "HTML (Crawler)", "JS (Browser)", "Impact"]]
-            for c in comp.get("comparison", []):
-                if not c.get("name"): continue
-                _st = "MISSING" if c["status"] == "missing" else "MINOR GAP" if c["status"] == "warn" else "OK"
-                _cc = _C_DANGER if c["status"] == "missing" else _C_WARN if c["status"] == "warn" else _C_SUCCESS
-                _cmp_rows.append([
-                    Paragraph(str(c["name"]),     _style("c1", fontSize=8, textColor=_C_WHITE,  fontName="Helvetica")),
-                    Paragraph(str(c["html_val"]), _style("c2", fontSize=8, textColor=_C_MUTED,  fontName="Helvetica")),
-                    Paragraph(str(c["js_val"]),   _style("c3", fontSize=8, textColor=_C_TEAL,   fontName="Helvetica")),
-                    Paragraph(_st,                _style("c4", fontSize=8, textColor=_cc,        fontName="Helvetica-Bold")),
-                ])
-            if len(_cmp_rows) > 1:
-                _cmt = Table(_cmp_rows, colWidths=["35%", "20%", "20%", "25%"])
-                _cmt.setStyle(_table_style())
-                story.append(_cmt)
-            html_t = comp.get("html_summary", {}).get("text_content_length", 0)
-            js_t   = comp.get("js_summary",   {}).get("text_content_length", 0)
-            if js_t > html_t:
-                pct = round(html_t / max(js_t, 1) * 100)
-                _pc = _score_color(pct)
-                story.append(_sp(4))
-                story.append(Paragraph(f"Content Visibility: {pct}% visible to AI  (HTML: {html_t:,} chars · JS: {js_t:,} chars · Hidden: {js_t-html_t:,} chars)", _style("cv", fontSize=8, textColor=_pc, fontName="Helvetica-Bold")))
-        if js_r.get("frameworks"):
-            for fname, fsev, fnote in js_r["frameworks"]:
-                _fc = _C_DANGER if fsev == "high" else _C_WARN
-                story.append(Paragraph(f"Framework: {fname} ({fsev}) — {fnote}", _style("fw", fontSize=8, textColor=_fc, fontName="Helvetica")))
-        story.extend(_ai_quote(_bifrost_js.get(test_url)))
-        story.append(_sp(4))
-    story.append(_hr())
-
-    # ── Pillar 2: Robots & Crawlability ──────────────────────────────────────
-    rob_score = pillar_scores.get("Robots & Crawl", 0)
-    story.append(Paragraph(f"Pillar 2 — Robots & Crawlability  {rob_score}%", S_H2))
-    story.append(Paragraph("SITE-LEVEL · Controls all crawler access", _style("rss", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
-    story.append(_sp(4))
-    cf = robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}
-    if cf.get("bot_fight_mode_likely") or (cf.get("cloudflare_detected") and cf.get("blocked_bots")):
-        story.append(Paragraph(f"ANTI-BOT PROTECTION ACTIVE — Blocking: {', '.join(cf.get('blocked_bots', []))}", S_CRIT))
-        story.append(_sp(2))
-    if robots_result.get("found"):
-        story.append(Paragraph(f"robots.txt: Found  |  Sitemaps: {len(robots_result.get('sitemaps', []))}", S_BODY))
-        _blocked = robots_result.get("blocked_resources", [])
-        story.append(Paragraph(f"Blocked resources: {', '.join(_blocked) if _blocked else 'None'}", S_BODY))
-        _ai_res = robots_result.get("ai_agent_results", robots_result.get("ai_results", {}))
-        if _ai_res:
-            _ai_rows = [["Bot", "Status"]]
-            for bn, info in _ai_res.items():
-                _av = info.get("robots_allowed", info.get("allowed"))
-                _as = "Allowed" if _av is True else "Blocked" if _av is False else "Unknown"
-                _ac = _C_SUCCESS if _av is True else _C_DANGER if _av is False else _C_MUTED
-                _ai_rows.append([
-                    Paragraph(bn,  _style("rb1", fontSize=8, textColor=_C_WHITE, fontName="Helvetica")),
-                    Paragraph(_as, _style("rb2", fontSize=8, textColor=_ac,      fontName="Helvetica-Bold")),
-                ])
-            _ait = Table(_ai_rows, colWidths=["70%", "30%"])
-            _ait.setStyle(_table_style())
-            story.append(_ait)
-    else:
-        story.append(Paragraph("robots.txt: NOT FOUND", S_CRIT))
-    story.extend(_ai_quote(_bifrost_robots))
-    story.append(_hr())
-
-    # ── Pillar 3: Schema & Entity ─────────────────────────────────────────────
-    sch_score = pillar_scores.get("Schema & Entity", 0)
-    story.append(Paragraph(f"Pillar 3 — Schema & Entity  {sch_score}%", S_H2))
-    story.append(Paragraph("PAGE-LEVEL · Checked on each of your pages", _style("sch_s", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
-    story.append(_sp(4))
-    for test_url, sr in schema_results.items():
-        lbl = url_labels.get(test_url, test_url)
-        if sr.get("error"):
-            story.append(Paragraph(f"{lbl}: ERROR", S_CRIT)); continue
-        _sc2 = _score_color(sr.get("score", 0))
-        story.append(Paragraph(f"{lbl}: {sr.get('score',0)}/100", _style("sph", fontSize=10, textColor=_sc2, fontName="Helvetica-Bold")))
-        schema_data = sr.get("schema", {})
-        types = schema_data.get("types", [])
-        validations = schema_data.get("validations", [])
-        schemas = schema_data.get("schemas", [])
-        if types:
-            story.append(Paragraph(f"Types: {', '.join(types)}", S_BODY))
-        ess_found   = schema_data.get("essential_found", [])
-        ess_missing = schema_data.get("essential_missing", [])
-        if ess_found:
-            story.append(Paragraph(f"Essential found: {', '.join(ess_found)}", S_OK))
-        if ess_missing:
-            story.append(Paragraph(f"Essential missing: {', '.join(ess_missing)}", S_WARN))
-        for v in validations:
-            comp2 = v.get("completeness", 0)
-            _vc = _score_color(comp2)
-            miss = f" — Missing: {', '.join(v['missing'])}" if v.get("missing") else ""
-            story.append(Paragraph(f"{v.get('type','?')}: {comp2}% complete{miss}", _style("val", fontSize=8, textColor=_vc, fontName="Helvetica")))
-        meta_data = sr.get("meta", {})
-        if meta_data:
-            title = meta_data.get("title", "")
-            desc_len = meta_data.get("desc_len", 0)
-            canon = meta_data.get("canonical", "")
-            story.append(Paragraph(f"Title ({len(title)} chars): {title[:80] or '(missing)'}", S_OK if title else S_CRIT))
-            story.append(Paragraph(f"Meta description: {desc_len} chars", S_OK if 100 <= desc_len <= 160 else S_WARN))
-            if not canon:
-                story.append(Paragraph("Canonical: Missing", S_WARN))
-            elif meta_data.get("canonical_matches_url"):
-                story.append(Paragraph(f"Canonical: Matching", S_OK))
-            else:
-                story.append(Paragraph(f"Canonical: Not matching — {canon[:80]}", S_CRIT))
-            if meta_data.get("was_redirected"):
-                story.append(Paragraph(f"Redirect detected — final URL: {meta_data.get('final_url','')[:80]}", S_WARN))
-        if not schemas:
-            story.append(Paragraph("No Schema.org structured data found", S_WARN))
-        story.extend(_ai_quote(_bifrost_schema.get(test_url)))
-        story.append(_sp(4))
-    story.append(_hr())
-
-    # ── Pillar 4: AI Discoverability ──────────────────────────────────────────
-    llm_score_val = pillar_scores.get("AI Discoverability", 0)
-    story.append(Paragraph(f"Pillar 4 — AI Discoverability  {llm_score_val}%", S_H2))
-    story.append(Paragraph("SITE-LEVEL · llm.txt files + AI Info Page", _style("llm_s", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
-    story.append(_sp(4))
-    llm_txt_data = llm_result.get("llm_txt", llm_result.get("files", {}))
-    for path, info in llm_txt_data.items():
-        found = info.get("found")
-        story.append(Paragraph(f"{path}: {'Found' if found else 'Not found'}", S_OK if found else S_WARN))
-        if found and info.get("lines"):
-            story.append(Paragraph(f"  Lines: {info.get('lines')} · Chars: {info.get('chars',0):,} · Has links: {'Yes' if info.get('has_links') else 'No'} · Has sections: {'Yes' if info.get('has_sections') else 'No'}", S_MUTED))
-    ai_info = llm_result.get("ai_info_page", {})
-    if ai_info.get("found"):
-        story.append(Paragraph(f"AI Info Page: Found — {ai_info.get('url','')[:80]}", S_OK))
-        story.append(Paragraph(f"  Linked from footer: {'Yes' if ai_info.get('linked_from_footer') else 'No'}  |  Indexable: {'Yes' if ai_info.get('indexable') else 'No'}", S_BODY))
-    else:
-        story.append(Paragraph("AI Info Page: Not found at /ai-info or similar", S_WARN))
-    wellknown = llm_result.get("wellknown", {})
-    for path, info in wellknown.items():
-        story.append(Paragraph(f"{'Found' if info.get('found') else 'Not found'}: {path}", S_OK if info.get("found") else S_MUTED))
-    story.extend(_ai_quote(_bifrost_llm))
-    story.append(_hr())
-
-    # ── Semantic Hierarchy ────────────────────────────────────────────────────
-    sem_score = pillar_scores.get("Semantic Hierarchy", 0)
-    story.append(Paragraph(f"Semantic Hierarchy & Content Structure  {sem_score}%", S_H2))
-    story.append(Paragraph("PAGE-LEVEL", _style("sem_s", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
-    story.append(_sp(4))
-    for test_url, sem_r in semantic_results.items():
-        lbl = url_labels.get(test_url, test_url)
-        if sem_r.get("error"):
-            story.append(Paragraph(f"{lbl}: ERROR", S_CRIT)); continue
-        story.append(Paragraph(lbl, _style("sph2", fontSize=10, textColor=_C_WHITE, fontName="Helvetica-Bold")))
-        hier_ok = sem_r.get("hierarchy_ok", True)
-        story.append(Paragraph(f"Heading hierarchy: {'Valid' if hier_ok else 'Issues — skipped levels'}", S_OK if hier_ok else S_WARN))
-        sem_elems = sem_r.get("semantic_elements", {})
-        if sem_elems:
-            story.append(Paragraph(f"Semantic elements: {', '.join(f'{k}:{v}' for k,v in sem_elems.items())}", S_BODY))
-        else:
-            story.append(Paragraph("No semantic HTML5 elements found", S_WARN))
-        html_len = sem_r.get("html_length", 0)
-        text_len = sem_r.get("text_length", 0)
-        if html_len > 0:
-            ratio = text_len / html_len * 100
-            story.append(Paragraph(f"Text-to-HTML ratio: {ratio:.1f}%", S_OK if ratio >= 15 else S_WARN))
-        story.extend(_ai_quote(_bifrost_sem.get(test_url)))
-        story.append(_sp(4))
-    story.append(_hr())
-
-    # ── Security & Exposure ───────────────────────────────────────────────────
-    sec_score_val = pillar_scores.get("Security", 0)
-    story.append(Paragraph(f"Security & Exposure  {sec_score_val}%", S_H2))
-    story.append(Paragraph("SITE-LEVEL · Sensitive path probing", _style("sec_s", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")))
-    story.append(_sp(4))
-    sec_findings = _security.get("findings", {})
-    sec_total    = _security.get("total_exposed", 0)
-    if sec_total == 0 and not sec_findings.get("html_exposure") and not sec_findings.get("robots_allowlist"):
-        story.append(Paragraph("No sensitive paths accessible — all probed paths returned 403/404/401", S_OK))
-    else:
-        for cat, lbl_str in [("critical", "Critical"), ("backend", "Backend"), ("customer", "Customer")]:
-            for f in sec_findings.get(cat, []):
-                story.append(Paragraph(f"[{lbl_str}] {f['path']} — HTTP {f['status']} ({f['size']:,} bytes)", S_CRIT if cat == "critical" else S_WARN))
-        for item in sec_findings.get("html_exposure", []):
-            story.append(Paragraph(f"[HTML] {item}", S_WARN))
-        for item in sec_findings.get("robots_allowlist", []):
-            story.append(Paragraph(f"[Robots Allow] {item['bot']}: {item['path']}", S_WARN))
-    story.append(_hr())
-
-    # ── Bot crawl results ─────────────────────────────────────────────────────
-    if bot_crawl_results:
-        story.append(Paragraph("Live Bot Crawl Results", S_H2))
-        story.append(_sp(3))
-        _bc_rows = [["Bot", "Company", "Status", "HTTP", "Load Time"]]
-        for bn, r in bot_crawl_results.items():
-            if r.get("error"):
-                _bc_rows.append([Paragraph(bn, _style("be", fontSize=8, textColor=_C_WHITE, fontName="Helvetica")), Paragraph("—", S_MUTED), Paragraph("ERROR", S_CRIT), Paragraph("—", S_MUTED), Paragraph("—", S_MUTED)])
-            else:
-                _st = "Allowed" if r.get("is_allowed") else "BLOCKED"
-                _sc = _C_SUCCESS if r.get("is_allowed") else _C_DANGER
-                _bc_rows.append([
-                    Paragraph(bn,                       _style("bc1", fontSize=8, textColor=_C_WHITE, fontName="Helvetica")),
-                    Paragraph(r.get("company",""),       _style("bc2", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")),
-                    Paragraph(_st,                       _style("bc3", fontSize=8, textColor=_sc,      fontName="Helvetica-Bold")),
-                    Paragraph(str(r.get("status_code","—")), _style("bc4", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")),
-                    Paragraph(f"{r.get('load_time','—')}s",  _style("bc5", fontSize=8, textColor=_C_MUTED, fontName="Helvetica")),
-                ])
-        _bct = Table(_bc_rows, colWidths=["25%", "25%", "20%", "15%", "15%"])
-        _bct.setStyle(_table_style())
-        story.append(_bct)
-        story.append(_sp(8))
-        story.append(_hr())
-
-    # ── Pattern Brain ─────────────────────────────────────────────────────────
-    if _brain:
-        story.append(Paragraph("Pattern Brain — AI Executive Summary", S_H2))
-        story.append(_sp(4))
-        for ln in _brain.splitlines():
-            if ln.strip():
-                story.append(Paragraph(ln.strip(), S_BODY))
-        story.append(_hr())
-
-    # ── Footer ────────────────────────────────────────────────────────────────
-    story.append(Paragraph("Report generated by Pattern LLM Access Checker", S_MUTED))
-    story.append(Paragraph("https://pattern.com", S_MUTED))
-
-    # Page background colour
-    def _bg_canvas(canvas, doc):
-        canvas.saveState()
-        canvas.setFillColor(_C_BG)
-        canvas.rect(0, 0, A4[0], A4[1], fill=1, stroke=0)
-        canvas.restoreState()
-
-    doc.build(story, onFirstPage=_bg_canvas, onLaterPages=_bg_canvas)
-    return buf.getvalue()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2503,9 +1718,10 @@ if run_audit or "_audit" in st.session_state:
             with st.expander(f"{label} — Score: {js_r['score']}/100" + (f" (via {provider})" if provider else "")):
 
                 # Frameworks detected
-                if js_r["frameworks"]:
+                frameworks = js_r.get("frameworks") or []
+                if frameworks:
                     st.markdown("**JS Frameworks Detected:**")
-                    for name, severity, note in js_r["frameworks"]:
+                    for name, severity, note in frameworks:
                         st.markdown(brand_status(f"**{name}** ({severity}) — {note}", "danger" if severity == "high" else "warning"), unsafe_allow_html=True)
 
                 # === COMPARISON TABLE (if JS rendering API was available) ===
@@ -3143,18 +2359,39 @@ if run_audit or "_audit" in st.session_state:
             js_results, llm_result, robots_result, schema_results,
             bot_crawl_results, recs,
         )
-        report_html = generate_report_html(
-            parsed.netloc, overall, pillar_scores_dict, url_labels,
-            js_results, llm_result, robots_result, schema_results,
-            semantic_results, bot_crawl_results, recs,
-        )
         domain_slug = parsed.netloc.replace(".", "_")
         date_slug   = time.strftime("%Y%m%d")
 
-        report_pdf = generate_report_pdf(
-            parsed.netloc, overall, pillar_scores_dict, url_labels,
-            js_results, llm_result, robots_result, schema_results,
-            semantic_results, bot_crawl_results, recs,
+        _audit_dict = {
+            "overall":           overall,
+            "overall_grade":     overall_grade,
+            "url_labels":        url_labels,
+            "js_results":        js_results,
+            "js_score":          js_score,
+            "robots_result":     robots_result,
+            "robots_score":      robots_score,
+            "schema_results":    schema_results,
+            "schema_score":      schema_score,
+            "llm_result":        llm_result,
+            "llm_score":         llm_score,
+            "semantic_results":  semantic_results,
+            "semantic_score":    semantic_score,
+            "security_result":   security_result,
+            "security_score":    security_score,
+            "bot_crawl_results": bot_crawl_results,
+            "no_blog":           no_blog,
+            "_bifrost_js":       st.session_state.get("_audit", {}).get("_bifrost_js", {}),
+            "_bifrost_robots":   st.session_state.get("_audit", {}).get("_bifrost_robots"),
+            "_bifrost_schema":   st.session_state.get("_audit", {}).get("_bifrost_schema", {}),
+            "_bifrost_llm":      st.session_state.get("_audit", {}).get("_bifrost_llm"),
+            "_bifrost_sem":      st.session_state.get("_audit", {}).get("_bifrost_sem", {}),
+            "pattern_brain":     st.session_state.get("_audit", {}).get("pattern_brain"),
+        }
+        _recs_dicts = [{"severity": s, "pillar": p, "text": t} for s, p, t in recs]
+        report_pdf = _generate_report_pdf(
+            audit=_audit_dict,
+            domain=parsed.netloc,
+            recs=_recs_dicts,
         )
         report_json = json.dumps(_make_json_safe({
             "domain":        parsed.netloc,
@@ -3173,7 +2410,7 @@ if run_audit or "_audit" in st.session_state:
             "bot_crawl_results": bot_crawl_results,
         }), indent=2)
 
-        dl_col1, dl_col2, dl_col3, dl_col4 = st.columns(4)
+        dl_col1, dl_col2, dl_col3 = st.columns(3)
         with dl_col1:
             st.download_button(
                 label="⬇ PDF Report",
@@ -3187,16 +2424,6 @@ if run_audit or "_audit" in st.session_state:
             st.caption("Formatted PDF — scores, tables, recommendations.")
         with dl_col2:
             st.download_button(
-                label="⬇ HTML Report",
-                data=report_html,
-                file_name=f"llm_access_audit_{domain_slug}_{date_slug}.html",
-                mime="text/html",
-                use_container_width=True,
-                key="dl_html",
-            )
-            st.caption("Opens in browser — Ctrl/Cmd+P to print.")
-        with dl_col3:
-            st.download_button(
                 label="⬇ Plain Text",
                 data=report_text,
                 file_name=f"llm_access_audit_{domain_slug}_{date_slug}.txt",
@@ -3205,7 +2432,7 @@ if run_audit or "_audit" in st.session_state:
                 key="dl_txt",
             )
             st.caption("Open in any editor or import to Notion.")
-        with dl_col4:
+        with dl_col3:
             st.download_button(
                 label="⬇ JSON Data",
                 data=report_json,
