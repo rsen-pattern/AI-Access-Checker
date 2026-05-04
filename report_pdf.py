@@ -905,7 +905,8 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
                 story.append(box)
                 story.append(_sp(6))
 
-        for fname, fsev, fnote in (js_r.get("frameworks") or []):
+        _frameworks = [f for f in (js_r.get("frameworks") or []) if f and len(f) == 3]
+        for fname, fsev, fnote in _frameworks:
             sev_kind = "danger" if fsev == "high" else "warning"
             story.append(_status_dot(f"<b>{fname}</b> ({fsev}) — {fnote}", sev_kind))
 
