@@ -3,7 +3,7 @@
 Pattern LLM Access Checker — Past Audits view.
 
 Renders the history view: auth gate, search/filter/sort bar, unified row
-layout (domain+date | score | pillar bars | Open | PDF | Share | Delete),
+layout (checkbox | domain+date | score | pillar bars | Open | PDF | Share | Delete),
 Before/After comparison expander, and Bulk Rerun expander.
 
 Side effects on session state:
@@ -15,6 +15,7 @@ Side effects on session state:
 - Sets st.session_state["_prefill_*"] for individual rerun buttons.
 - Sets st.session_state["_pending_rerun"] to trigger an audit run on next rerender.
 - Mutates st.query_params["audit"] when sharing or loading.
+- Tracks _bulk_delete_selected (set[str]) for multi-row delete.
 
 These side effects are consumed by the audit form and the top-of-script
 bulk-rerun queue processor and prefill handlers. Do not change the keys or
@@ -25,6 +26,7 @@ semantics. _bulk_rerun_current_id is set by the top-of-script queue processor
 import csv
 import io
 import json
+import re
 
 import streamlit as st
 
@@ -63,6 +65,30 @@ def _grade(s: int) -> str:
     return next(v for k, v in sorted(_GRADE_MAP.items(), reverse=True) if s >= k)
 
 
+def _score_badge(score: int) -> str:
+    color = _score_color(score)
+    grade = _grade(score)
+    return (
+        f'<span style="background:{color}22;color:{color};'
+        f'padding:4px 10px;border-radius:6px;font-size:13px;'
+        f'font-weight:700;">{score}% {grade}</span>'
+    )
+
+
+def _highlight(text: str, query: str) -> str:
+    """Highlight query matches inside text with a subtle primary-colour mark."""
+    if not query or len(query) < 2:
+        return text
+    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    return pattern.sub(
+        lambda m: (
+            f'<mark style="background:{BRAND["primary"]}33;color:{BRAND["white"]};'
+            f'padding:0 2px;border-radius:2px;">{m.group(0)}</mark>'
+        ),
+        text,
+    )
+
+
 def _render_auth_gate(message: str) -> None:
     """Render the login form with a context-specific message.
 
@@ -93,11 +119,10 @@ def _render_auth_gate(message: str) -> None:
 def _pillar_bars_html(ps: dict) -> str:
     """Return HTML for a 3×2 grid of mini pillar score bars."""
     bars = ""
-    for i, (short, full) in enumerate(zip(_P_SHORT, _PILLARS)):
+    for short, full in zip(_P_SHORT, _PILLARS):
         score = ps.get(full, 0)
         color = _score_color(score)
         pct   = min(score, 100)
-        # Arrange 3 per row using inline-block
         bars += (
             f'<div style="display:inline-block;width:62px;margin:1px 2px;vertical-align:top;">'
             f'<div style="background:{BRAND["border"]};border-radius:2px;height:4px;width:100%;">'
@@ -110,6 +135,189 @@ def _pillar_bars_html(ps: dict) -> str:
         + bars
         + '</div>'
     )
+
+
+def _render_audit_row(
+    row: dict,
+    row_index: int,
+    host: str,
+    row_key_prefix: str = "",
+) -> None:
+    """Render a single unified audit row (checkbox | info | score | bars | actions).
+
+    row_key_prefix allows disambiguation when rows appear inside group expanders.
+    """
+    _dom      = row.get("domain", "—")
+    _date     = (row.get("audited_at") or "")[:10]
+    _sc       = row.get("overall_score", 0)
+    _audit_id = str(row.get("id") or "")
+    _fr       = row.get("full_results")
+    _has_full = isinstance(_fr, dict) and "js_results" in _fr
+
+    try:
+        _ps = json.loads(row.get("pillar_scores") or "{}")
+    except Exception:
+        _ps = {}
+
+    _row_bg  = BRAND["bg_card"] if row_index % 2 == 0 else BRAND["bg_surface"]
+    _pfx     = f"{row_key_prefix}{_audit_id}"
+
+    # Shared state keys (single-item, so no prefix needed — only one can be active at a time)
+    _share_key = "_share_open_id"
+    _pdf_key   = "_pdf_ready_id"
+    _del_key   = "_delete_pending_id"
+
+    _share_open  = st.session_state.get(_share_key) == _audit_id
+    _pdf_ready   = st.session_state.get(_pdf_key) == _audit_id
+    _del_pending = st.session_state.get(_del_key) == _audit_id
+
+    # Bulk-delete selection state
+    _bulk_sel: set = st.session_state.get("_bulk_delete_selected") or set()
+    _is_selected   = _audit_id in _bulk_sel
+    _bulk_confirm  = st.session_state.get("_bulk_delete_confirm", False)
+
+    with st.container():
+        st.markdown(
+            f'<div class="hist-row" style="background:{_row_bg};border-bottom:1px solid {BRAND["border"]};'
+            f'padding:10px 4px;min-height:64px;">',
+            unsafe_allow_html=True,
+        )
+
+        if _del_pending:
+            # In-place single-row delete confirmation — full width
+            _dc1, _dc2, _dc3 = st.columns([4, 1, 1])
+            with _dc1:
+                st.markdown(
+                    f'<div style="padding:8px 0;color:{BRAND["danger"]};font-size:13px;font-weight:600;">'
+                    f'Delete <strong>{_dom}</strong> from {_date}?</div>',
+                    unsafe_allow_html=True,
+                )
+            with _dc2:
+                if st.button("Confirm delete", key=f"del_yes_{_pfx}", type="primary", use_container_width=True):
+                    delete_audit_by_id(_audit_id)
+                    st.session_state.pop(_del_key, None)
+                    st.rerun()
+            with _dc3:
+                if st.button("Cancel", key=f"del_cancel_{_pfx}", use_container_width=True):
+                    st.session_state.pop(_del_key, None)
+                    st.rerun()
+        else:
+            # Normal row — [0.4, 3, 1, 3, 1, 0.7, 0.7, 0.5]
+            _c_chk, _c_info, _c_score, _c_bars, _c_open, _c_pdf, _c_share, _c_del = st.columns(
+                [0.4, 3, 1, 3, 1, 0.7, 0.7, 0.5]
+            )
+
+            with _c_chk:
+                if _audit_id and _has_full and not _bulk_confirm:
+                    _checked = st.checkbox(
+                        "",
+                        value=_is_selected,
+                        key=f"chk_{_pfx}",
+                        label_visibility="collapsed",
+                    )
+                    if _checked != _is_selected:
+                        _new_sel = set(_bulk_sel)
+                        if _checked:
+                            _new_sel.add(_audit_id)
+                        else:
+                            _new_sel.discard(_audit_id)
+                        st.session_state["_bulk_delete_selected"] = _new_sel
+                        st.rerun()
+
+            with _c_info:
+                _dom_html = _highlight(_dom, st.session_state.get("hist_search", ""))
+                st.markdown(
+                    f'<div style="padding:6px 0;">'
+                    f'<div style="font-size:14px;font-weight:700;color:{BRAND["white"]};">{_dom_html}</div>'
+                    f'<div style="font-size:12px;color:{BRAND["text_secondary"]};margin-top:2px;">{_date}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            with _c_score:
+                st.markdown(
+                    f'<div style="padding:6px 0;">{_score_badge(_sc)}</div>',
+                    unsafe_allow_html=True,
+                )
+
+            with _c_bars:
+                st.markdown(_pillar_bars_html(_ps), unsafe_allow_html=True)
+
+            with _c_open:
+                if st.button(
+                    "Open",
+                    key=f"open_{_pfx}",
+                    type="primary",
+                    disabled=not _has_full,
+                    use_container_width=True,
+                ):
+                    st.session_state["_audit"]               = _fr
+                    st.session_state["_loaded_from_history"]  = f"{_dom} · {_date} · {_sc}%"
+                    st.session_state["_loaded_audit_id"]     = _audit_id
+                    st.session_state["_view"]                = "report"
+                    st.session_state["_view_origin"]         = "history"
+                    st.query_params["audit"]                 = _audit_id
+                    st.rerun()
+
+            with _c_pdf:
+                if _has_full:
+                    if _pdf_ready:
+                        from core.ui_recommendations import build_recommendations as _br
+                        from report_pdf import generate_report_pdf as _grpdf
+                        from urllib.parse import urlparse as _urlparse
+                        _pdf_urls  = _fr.get("all_test_urls", [])
+                        _pdf_url   = _pdf_urls[0] if _pdf_urls else "https://example.com"
+                        _pdf_dom   = _urlparse(_pdf_url).netloc or _dom
+                        _pdf_recs  = _br(_fr, bool(_fr.get("no_blog", False)))
+                        _pdf_bytes = _grpdf(audit=_fr, domain=_pdf_dom, recs=_pdf_recs)
+                        st.download_button(
+                            "📥",
+                            data=_pdf_bytes,
+                            file_name=f"llm_audit_{_dom}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key=f"pdf_dl_{_pfx}",
+                        )
+                        st.session_state.pop(_pdf_key, None)
+                    else:
+                        if st.button("📥", key=f"pdf_btn_{_pfx}", use_container_width=True, help="Download PDF report"):
+                            st.session_state[_pdf_key] = _audit_id
+                            st.rerun()
+
+            with _c_share:
+                if _audit_id and _has_full:
+                    if st.button("🔗", key=f"share_{_pfx}", use_container_width=True, help="Copy shareable link"):
+                        if _share_open:
+                            st.session_state.pop(_share_key, None)
+                        else:
+                            st.session_state[_share_key] = _audit_id
+                        st.rerun()
+
+            with _c_del:
+                # Hide single-row delete when bulk-confirm is active
+                if _audit_id and not _bulk_confirm:
+                    if st.button("⋮", key=f"del_{_pfx}", use_container_width=True, help="Delete audit"):
+                        st.session_state[_del_key] = _audit_id
+                        st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # Share block — rendered full-width immediately below the row
+    if _share_open and _audit_id:
+        _share_url = f"https://{host}/?audit={_audit_id}" if host else f"/?audit={_audit_id}"
+        _pdf_url_s = f"https://{host}/?audit={_audit_id}&format=pdf" if host else f"/?audit={_audit_id}&format=pdf"
+        st.markdown(
+            f'<div style="color:{BRAND["teal"]};font-size:12px;margin:4px 0 2px 0;">'
+            f'✓ Shareable links — copy and send</div>',
+            unsafe_allow_html=True,
+        )
+        _sl_c1, _sl_c2 = st.columns(2)
+        with _sl_c1:
+            st.caption("View report")
+            st.code(_share_url, language=None)
+        with _sl_c2:
+            st.caption("Direct PDF")
+            st.code(_pdf_url_s, language=None)
 
 
 def render_history_tab() -> None:
@@ -146,15 +354,73 @@ def render_history_tab() -> None:
         return
 
     _hist_all = load_audit_history(limit=50)
+
+    # ── Empty state (no audits at all) ────────────────────────────────────────
     if not _hist_all:
-        st.info("No audits saved yet — run your first audit from New Audit.")
+        st.markdown(
+            f'''<div style="background:{BRAND['bg_card']};border:1px solid {BRAND['border']};
+                border-radius:12px;padding:32px 24px;text-align:center;margin-top:24px;">
+              <div style="font-size:32px;margin-bottom:8px;">📋</div>
+              <div style="font-size:16px;font-weight:600;color:{BRAND['white']};
+                          margin-bottom:6px;">No audits yet</div>
+              <div style="color:{BRAND['text_secondary']};font-size:13px;
+                          margin-bottom:16px;">Run your first audit to see results here.</div>
+            </div>''',
+            unsafe_allow_html=True,
+        )
+        if st.button("Run your first audit", type="primary", key="empty_state_cta"):
+            st.session_state["_view"] = "new"
+            st.rerun()
         return
+
+    # ── Bulk-delete selection action bar ─────────────────────────────────────
+    _bulk_sel: set = st.session_state.get("_bulk_delete_selected") or set()
+    _bulk_confirm  = st.session_state.get("_bulk_delete_confirm", False)
+    _del_pending_single = st.session_state.get("_delete_pending_id")
+
+    if _bulk_sel and not _del_pending_single:
+        _n_sel = len(_bulk_sel)
+        if _bulk_confirm:
+            _bc1, _bc2, _bc3, _bc4 = st.columns([3, 1, 1, 1])
+            with _bc1:
+                st.markdown(
+                    f'<div style="padding:8px 0;color:{BRAND["danger"]};font-size:13px;font-weight:600;">'
+                    f'Delete {_n_sel} audit{"s" if _n_sel != 1 else ""}? This cannot be undone.</div>',
+                    unsafe_allow_html=True,
+                )
+            with _bc2:
+                if st.button("Confirm", key="bulk_del_confirm_yes", type="primary", use_container_width=True):
+                    for _bid in list(_bulk_sel):
+                        delete_audit_by_id(_bid)
+                    st.session_state.pop("_bulk_delete_selected", None)
+                    st.session_state.pop("_bulk_delete_confirm", None)
+                    st.rerun()
+            with _bc3:
+                if st.button("Cancel", key="bulk_del_confirm_no", use_container_width=True):
+                    st.session_state.pop("_bulk_delete_confirm", None)
+                    st.rerun()
+        else:
+            _ba1, _ba2, _ba3, _ba4 = st.columns([2, 1.5, 1, 2])
+            with _ba1:
+                st.markdown(
+                    f'<div style="padding:8px 0;color:{BRAND["white"]};font-size:13px;font-weight:600;">'
+                    f'{_n_sel} selected</div>',
+                    unsafe_allow_html=True,
+                )
+            with _ba2:
+                if st.button("🗑 Delete selected", key="bulk_del_btn", type="primary", use_container_width=True):
+                    st.session_state["_bulk_delete_confirm"] = True
+                    st.rerun()
+            with _ba3:
+                if st.button("Clear selection", key="bulk_del_clear", use_container_width=True):
+                    st.session_state.pop("_bulk_delete_selected", None)
+                    st.rerun()
 
     # ── Search / Filter / Sort bar ────────────────────────────────────────────
     _SCORE_BANDS = ["Any", "<35 (F)", "35–49 (D)", "50–69 (C)", "70–84 (B)", "85+ (A)"]
     _SORT_OPTS   = ["Newest", "Oldest", "Highest score", "Lowest score"]
 
-    _sb_c1, _sb_c2, _sb_c3, _sb_c4 = st.columns([3, 2, 1.5, 1])
+    _sb_c1, _sb_c2, _sb_c3, _sb_c4, _sb_c5 = st.columns([3, 2, 1.5, 1, 1])
     with _sb_c1:
         _search = st.text_input(
             "search",
@@ -179,6 +445,13 @@ def render_history_tab() -> None:
             key="hist_sort",
         )
     with _sb_c4:
+        _group_by = st.toggle(
+            "Group",
+            value=st.session_state.get("hist_group_by_domain", False),
+            key="hist_group_by_domain",
+            help="Group by domain",
+        )
+    with _sb_c5:
         # CSV export — built from the full unfiltered list
         _csv_buf = io.StringIO()
         _csv_w   = csv.writer(_csv_buf)
@@ -236,7 +509,6 @@ def render_history_tab() -> None:
             f'Showing 0 of {_total} audits</div>',
             unsafe_allow_html=True,
         )
-        # Empty state card
         with st.container():
             st.markdown(
                 f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};'
@@ -266,153 +538,56 @@ def render_history_tab() -> None:
     except Exception:
         pass
 
-    # ── Unified row list ──────────────────────────────────────────────────────
-    for _i, _row in enumerate(_rows):
-        _dom      = _row.get("domain", "—")
-        _date     = (_row.get("audited_at") or "")[:10]
-        _sc       = _row.get("overall_score", 0)
-        _audit_id = str(_row.get("id") or "")
-        _fr       = _row.get("full_results")
-        _has_full = isinstance(_fr, dict) and "js_results" in _fr
-        _g        = _grade(_sc)
+    # ── Row list — flat or grouped ────────────────────────────────────────────
+    st.markdown('<div class="hist-list">', unsafe_allow_html=True)
 
-        try:
-            _ps = json.loads(_row.get("pillar_scores") or "{}")
-        except Exception:
-            _ps = {}
+    if _group_by:
+        # Group rows by domain, keep domain order by latest audit date (or score sort)
+        _domain_order: list[str] = []
+        _domain_rows: dict[str, list] = {}
+        for _r in _rows:
+            _d = _r.get("domain") or "—"
+            if _d not in _domain_rows:
+                _domain_rows[_d] = []
+                _domain_order.append(_d)
+            _domain_rows[_d].append(_r)
 
-        _sc_color = _score_color(_sc)
-        _row_bg   = BRAND["bg_card"] if _i % 2 == 0 else BRAND["bg_surface"]
+        for _gi, _gdom in enumerate(_domain_order):
+            _grow = _domain_rows[_gdom]
+            # Sort within group by newest first for delta computation
+            _grow_sorted = sorted(_grow, key=lambda r: r.get("audited_at") or "", reverse=True)
+            _latest  = _grow_sorted[0]
+            _lat_sc  = _latest.get("overall_score", 0)
+            _lat_dt  = (_latest.get("audited_at") or "")[:10]
 
-        # State keys for this row
-        _share_key   = f"_share_open_id"
-        _pdf_key     = f"_pdf_ready_id"
-        _del_key     = f"_delete_pending_id"
-
-        _share_open  = st.session_state.get(_share_key) == _audit_id
-        _pdf_ready   = st.session_state.get(_pdf_key) == _audit_id
-        _del_pending = st.session_state.get(_del_key) == _audit_id
-
-        # Row container
-        with st.container():
-            st.markdown(
-                f'<div style="background:{_row_bg};border-bottom:1px solid {BRAND["border"]};'
-                f'padding:10px 4px;min-height:64px;">',
-                unsafe_allow_html=True,
-            )
-
-            if _del_pending:
-                # In-place delete confirmation — full width
-                _dc1, _dc2, _dc3 = st.columns([4, 1, 1])
-                with _dc1:
-                    st.markdown(
-                        f'<div style="padding:8px 0;color:{BRAND["danger"]};font-size:13px;font-weight:600;">'
-                        f'Delete <strong>{_dom}</strong> from {_date}?</div>',
-                        unsafe_allow_html=True,
-                    )
-                with _dc2:
-                    if st.button("Confirm delete", key=f"del_yes_{_audit_id}", type="primary", use_container_width=True):
-                        delete_audit_by_id(_audit_id)
-                        st.session_state.pop(_del_key, None)
-                        st.rerun()
-                with _dc3:
-                    if st.button("Cancel", key=f"del_cancel_{_audit_id}", use_container_width=True):
-                        st.session_state.pop(_del_key, None)
-                        st.rerun()
+            # Delta vs previous audit in same domain
+            if len(_grow_sorted) >= 2:
+                _prev_sc  = _grow_sorted[1].get("overall_score", 0)
+                _prev_dt  = (_grow_sorted[1].get("audited_at") or "")[:10]
+                _delta    = _lat_sc - _prev_sc
+                _delta_c  = BRAND["teal"] if _delta > 0 else BRAND["danger"] if _delta < 0 else BRAND["text_secondary"]
+                _delta_s  = f'+{_delta}' if _delta > 0 else str(_delta)
+                _delta_html = (
+                    f'<span style="color:{_delta_c};font-size:12px;margin-left:8px;">'
+                    f'{_delta_s}pts vs {_prev_dt}</span>'
+                )
             else:
-                # Normal row — [3, 1, 3, 1, 0.7, 0.7, 0.5]
-                _c_info, _c_score, _c_bars, _c_open, _c_pdf, _c_share, _c_del = st.columns(
-                    [3, 1, 3, 1, 0.7, 0.7, 0.5]
+                _delta_html = (
+                    f'<span style="color:{BRAND["text_secondary"]};font-size:12px;margin-left:8px;">'
+                    f'First audit</span>'
                 )
 
-                with _c_info:
-                    st.markdown(
-                        f'<div style="padding:6px 0;">'
-                        f'<div style="font-size:14px;font-weight:700;color:{BRAND["white"]};">{_dom}</div>'
-                        f'<div style="font-size:12px;color:{BRAND["text_secondary"]};margin-top:2px;">{_date}</div>'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
-
-                with _c_score:
-                    st.markdown(
-                        f'<div style="padding:6px 0;">'
-                        f'<span style="font-size:20px;font-weight:800;color:{_sc_color};">{_sc}%</span>'
-                        f'<span style="font-size:12px;color:{BRAND["text_secondary"]};margin-left:5px;">{_g}</span>'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
-
-                with _c_bars:
-                    st.markdown(_pillar_bars_html(_ps), unsafe_allow_html=True)
-
-                with _c_open:
-                    if st.button(
-                        "Open",
-                        key=f"open_{_audit_id}",
-                        type="primary",
-                        disabled=not _has_full,
-                        use_container_width=True,
-                    ):
-                        st.session_state["_audit"]              = _fr
-                        st.session_state["_loaded_from_history"] = f"{_dom} · {_date} · {_sc}%"
-                        st.session_state["_loaded_audit_id"]    = _audit_id
-                        st.session_state["_view"]               = "report"
-                        st.session_state["_view_origin"]        = "history"
-                        st.query_params["audit"]                = _audit_id
-                        st.rerun()
-
-                with _c_pdf:
-                    if _has_full:
-                        if _pdf_ready:
-                            from core.ui_recommendations import build_recommendations as _br
-                            from report_pdf import generate_report_pdf as _grpdf
-                            from urllib.parse import urlparse as _urlparse
-                            _pdf_urls  = _fr.get("all_test_urls", [])
-                            _pdf_url   = _pdf_urls[0] if _pdf_urls else "https://example.com"
-                            _pdf_dom   = _urlparse(_pdf_url).netloc or _dom
-                            _pdf_recs  = _br(_fr, bool(_fr.get("no_blog", False)))
-                            _pdf_bytes = _grpdf(audit=_fr, domain=_pdf_dom, recs=_pdf_recs)
-                            st.download_button(
-                                "📥",
-                                data=_pdf_bytes,
-                                file_name=f"llm_audit_{_dom}.pdf",
-                                mime="application/pdf",
-                                use_container_width=True,
-                                key=f"pdf_dl_{_audit_id}",
-                            )
-                            st.session_state.pop(_pdf_key, None)
-                        else:
-                            if st.button("📥", key=f"pdf_btn_{_audit_id}", use_container_width=True, help="Download PDF report"):
-                                st.session_state[_pdf_key] = _audit_id
-                                st.rerun()
-
-                with _c_share:
-                    if _audit_id and _has_full:
-                        if st.button("🔗", key=f"share_{_audit_id}", use_container_width=True, help="Copy shareable link"):
-                            if _share_open:
-                                st.session_state.pop(_share_key, None)
-                            else:
-                                st.session_state[_share_key] = _audit_id
-                            st.rerun()
-
-                with _c_del:
-                    if _audit_id:
-                        if st.button("⋮", key=f"del_{_audit_id}", use_container_width=True, help="Delete audit"):
-                            st.session_state[_del_key] = _audit_id
-                            st.rerun()
-
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        # Share block — rendered below the row, full-width
-        if _share_open and _audit_id:
-            _share_url = f"https://{_host}/?audit={_audit_id}" if _host else f"/?audit={_audit_id}"
-            st.markdown(
-                f'<div style="color:{BRAND["teal"]};font-size:12px;margin:4px 0 2px 0;">'
-                f'✓ Shareable link — copy and send</div>',
-                unsafe_allow_html=True,
+            _exp_title = (
+                f'{_gdom} — {_score_badge(_lat_sc)} {_delta_html}'
             )
-            st.code(_share_url, language=None)
+            with st.expander(_exp_title, expanded=False):
+                for _ri, _gr in enumerate(_grow_sorted):
+                    _render_audit_row(_gr, _ri, _host, row_key_prefix=f"g{_gi}_")
+    else:
+        for _i, _row in enumerate(_rows):
+            _render_audit_row(_row, _i, _host)
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Expanders ─────────────────────────────────────────────────────────────
     st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
