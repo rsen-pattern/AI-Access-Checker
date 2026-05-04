@@ -8,8 +8,19 @@ Plus: Live Bot Crawl, Sensitive Path Scan, Semantic Hierarchy Checks
 
 import streamlit as st
 import base64
+from core.branding import FAVICON_SVG
+
+FAVICON_B64 = base64.b64encode(FAVICON_SVG.encode()).decode()
+
+st.set_page_config(
+    page_title="Pattern — LLM Access Checker",
+    page_icon=f"data:image/svg+xml;base64,{FAVICON_B64}",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
 from core.branding import (
-    BRAND, PATTERN_LOGO_SVG, FAVICON_SVG,
+    BRAND, PATTERN_LOGO_SVG,
 )
 from core.persistence import (
     get_secret,
@@ -19,8 +30,6 @@ from core.ui_audit_form import render_audit_form
 from core.ui_history import render_history_tab
 from core.ui_results import render_results
 from core.ui_audit_pipeline import execute_audit_pipeline
-
-FAVICON_B64 = base64.b64encode(FAVICON_SVG.encode()).decode()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STREAMLIT UI — PATTERN BRANDED
