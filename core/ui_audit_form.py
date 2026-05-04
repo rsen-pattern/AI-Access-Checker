@@ -10,6 +10,8 @@ audit pipeline. No audit logic lives here.
 import streamlit as st
 
 from core.branding import BRAND
+from core.persistence import is_history_authenticated
+from core.ui_history import _render_auth_gate
 
 
 def render_audit_form() -> tuple:
@@ -26,8 +28,13 @@ def render_audit_form() -> tuple:
         run_audit: bool — True if Run Audit was clicked OR a pending rerun
             from history is being consumed.
 
-    Must be called inside a `with tab_audit:` context.
+    Must be called inside a `with tab_audit:` or view context.
     """
+    # ── Auth gate for new audit view ──────────────────────────────────────────
+    if not is_history_authenticated():
+        _render_auth_gate("Sign in to run a new audit.")
+        return {}, False, False, False
+
     # ── INPUT: Mandatory URL structure ────────────────────────────────────────
     st.markdown(f'<div style="font-weight:600;color:{BRAND["white"]};margin-bottom:8px;">Enter the URLs to audit (minimum 7 pages required)</div>', unsafe_allow_html=True)
 

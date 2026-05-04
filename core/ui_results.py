@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 import streamlit as st
 
 from core.branding import BRAND, PATTERN_LOGO_SVG
+from core.persistence import is_history_authenticated
 from core.llm_access_checks import (
     AI_BOTS,
     pattern_brain_analysis,
@@ -92,6 +93,113 @@ def render_results(audit: dict, get_secret_fn) -> None:
     no_blog           = audit.get("no_blog", False)
     url               = all_test_urls[0] if all_test_urls else "https://example.com"
     parsed            = urlparse(url)
+
+    # ── Report view header strip ──────────────────────────────────────────
+    # Shown when _view == "report". Provides back navigation, domain summary,
+    # and action buttons (Rerun, PDF, Share).
+    if st.session_state.get("_view") == "report":
+        _rh_domain    = parsed.netloc or "—"
+        _rh_label     = st.session_state.get("_loaded_from_history", "")
+        _rh_date      = _rh_label.split("·")[1].strip() if "·" in _rh_label else ""
+        _rh_score_str = _rh_label.split("·")[2].strip() if _rh_label.count("·") >= 2 else f"{overall}%"
+        _rh_audit_id  = st.session_state.get("_loaded_audit_id")
+
+        # Build share URL from current query params
+        _rh_host = st.context.headers.get("host", "") if hasattr(st, "context") else ""
+        _rh_share_url = f"https://{_rh_host}/?audit={_rh_audit_id}" if _rh_audit_id and _rh_host else ""
+
+        _rh_back_col, _rh_title_col, _rh_btn_col = st.columns([1, 5, 3])
+        with _rh_back_col:
+            if st.button("← Back", key="_rh_back", use_container_width=True):
+                _origin = st.session_state.get("_view_origin", "history")
+                st.session_state["_view"] = _origin
+                st.session_state.pop("_view_origin", None)
+                st.session_state.pop("_audit", None)
+                st.session_state.pop("_loaded_audit_id", None)
+                st.session_state.pop("_loaded_from_history", None)
+                st.query_params.pop("audit", None)
+                st.rerun()
+        with _rh_title_col:
+            _sc_color = (
+                BRAND["teal"] if overall >= 75
+                else BRAND["primary"] if overall >= 50
+                else BRAND["warning"] if overall >= 35
+                else BRAND["danger"]
+            )
+            _rh_subtitle = f"audited {_rh_date} · " if _rh_date else ""
+            st.markdown(
+                f'<div style="padding:6px 0;">'
+                f'<span style="font-size:1.1rem;font-weight:700;color:{BRAND["white"]};">{_rh_domain}</span>'
+                f'<span style="color:{BRAND["text_secondary"]};font-size:0.85rem;margin-left:10px;">{_rh_subtitle}'
+                f'<span style="color:{_sc_color};font-weight:700;">{_rh_score_str}</span></span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        with _rh_btn_col:
+            _rh_b1, _rh_b2, _rh_b3 = st.columns(3)
+            with _rh_b1:
+                if is_history_authenticated():
+                    _LABEL_TO_KEY = {
+                        "Homepage": "home", "Category 1": "cat1", "Category 2": "cat2",
+                        "Blog 1": "blog1", "Blog 2": "blog2",
+                        "Content 1": "blog1", "Content 2": "blog2",
+                        "Product 1": "prod1", "Product 2": "prod2",
+                    }
+                    if st.button("🔄 Rerun", key="_rh_rerun", use_container_width=True):
+                        _inv = {v: k for k, v in (audit.get("url_labels") or {}).items()}
+                        for _lbl, _wk in _LABEL_TO_KEY.items():
+                            if _lbl in _inv:
+                                st.session_state[f"_prefill_{_wk}"] = _inv[_lbl]
+                        st.session_state["_prefill_no_blog"]       = bool(audit.get("no_blog", False))
+                        st.session_state["_prefill_run_bot_crawl"] = bool(audit.get("bot_crawl_results"))
+                        st.session_state.pop("_audit", None)
+                        st.session_state.pop("_loaded_audit_id", None)
+                        st.session_state.pop("_loaded_from_history", None)
+                        st.query_params.pop("audit", None)
+                        st.session_state["_pending_rerun"] = True
+                        st.session_state["_view"] = "new"
+                        st.rerun()
+                else:
+                    st.markdown(
+                        f'<div style="font-size:11px;color:{BRAND["text_secondary"]};padding:8px 0;">Sign in to rerun or save audits.</div>',
+                        unsafe_allow_html=True,
+                    )
+            with _rh_b2:
+                # Two-step PDF download
+                _rh_pdf_ready = st.session_state.get("_rh_pdf_ready")
+                if _rh_pdf_ready:
+                    from core.ui_recommendations import build_recommendations as _build_recs
+                    _rh_recs = _build_recs(audit, no_blog)
+                    _rh_pdf_bytes = _generate_report_pdf(
+                        audit=audit, domain=parsed.netloc, recs=_rh_recs
+                    )
+                    st.download_button(
+                        "📥 PDF",
+                        data=_rh_pdf_bytes,
+                        file_name=f"llm_audit_{parsed.netloc}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key="_rh_pdf_dl",
+                    )
+                    st.session_state.pop("_rh_pdf_ready", None)
+                else:
+                    if st.button("📥 PDF", key="_rh_pdf_btn", use_container_width=True):
+                        st.session_state["_rh_pdf_ready"] = True
+                        st.rerun()
+            with _rh_b3:
+                if _rh_audit_id:
+                    _rh_share_open = st.session_state.get("_rh_share_open")
+                    if st.button("🔗 Share", key="_rh_share_btn", use_container_width=True):
+                        st.session_state["_rh_share_open"] = not _rh_share_open
+                        st.rerun()
+                    if _rh_share_open and _rh_share_url:
+                        st.markdown(
+                            f'<div style="font-size:11px;color:{BRAND["teal"]};margin-top:4px;">✓ Shareable link — copy and send</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.code(_rh_share_url, language=None)
+
+        st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
 
     # ── Overwrite confirmation prompt ─────────────────────────────────────
     if "_pending_overwrite" in st.session_state:
