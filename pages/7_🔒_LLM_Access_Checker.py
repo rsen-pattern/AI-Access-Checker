@@ -1975,11 +1975,25 @@ if run_audit or "_audit" in st.session_state:
 
         recs = []
 
+        # ── Critical security exposures (top priority) ────────────────────────────
+        sec_findings = security_result.get("findings", {}) if isinstance(security_result, dict) else {}
+        critical_paths = sec_findings.get("critical", []) or []
+        if critical_paths:
+            paths_str = ", ".join(f["path"] for f in critical_paths[:5])
+            recs.append((
+                "critical",
+                "Security Exposure",
+                f"Critical paths returning HTTP 200 to AI bots: {paths_str}. "
+                f"This may expose admin interfaces, environment files, or configuration data. "
+                f"Verify these paths are intentionally public; if not, return 403/404 immediately. "
+                f"AI bots will index any 200 response — this is the highest-priority fix in this audit.",
+            ))
+
         # ── BAISOM L1: Cloudflare (CRITICAL — silent AI blocker) ──────────────────
         cf_result = robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}
         if cf_result.get("bot_fight_mode_likely"):
             blocked = cf_result.get("blocked_bots", [])
-            recs.append(("danger", "Cloudflare", f"Bot Fight Mode is blocking key AI crawlers: {', '.join(blocked)}. Disable it or allowlist AI user-agents in Cloudflare dashboard. This overrides your robots.txt."))
+            recs.append(("critical", "Cloudflare", f"Bot Fight Mode is blocking key AI crawlers: {', '.join(blocked)}. Disable it or allowlist AI user-agents in Cloudflare dashboard. This overrides your robots.txt."))
         elif cf_result.get("cloudflare_detected") and cf_result.get("blocked_bots"):
             recs.append(("warning", "Cloudflare", f"Cloudflare is blocking some AI bots ({', '.join(cf_result['blocked_bots'])}). Review Bot Fight Mode settings."))
 
@@ -1998,17 +2012,17 @@ if run_audit or "_audit" in st.session_state:
         # ── Robots & Crawlability ─────────────────────────────────────────────────
         if isinstance(robots_result, dict):
             if not robots_result.get("found"):
-                recs.append(("danger", "Robots.txt", "No robots.txt found — the foundational control for all crawler access. Create one immediately that explicitly allows GPTBot, ClaudeBot, and PerplexityBot."))
+                recs.append(("critical", "Robots.txt", "No robots.txt found — the foundational control for all crawler access. Create one immediately that explicitly allows GPTBot, ClaudeBot, and PerplexityBot."))
             else:
                 if not robots_result.get("sitemaps"):
                     recs.append(("warning", "Robots.txt", "No sitemap referenced in robots.txt. Add 'Sitemap: https://yourdomain.com/sitemap.xml' so AI crawlers can discover all pages."))
                 if robots_result.get("blocked_resources"):
-                    recs.append(("danger", "Robots.txt", f"CSS/JS blocked in robots.txt: {', '.join(robots_result['blocked_resources'][:3])}. This prevents AI from understanding page structure — remove these Disallow rules."))
+                    recs.append(("critical", "Robots.txt", f"CSS/JS blocked in robots.txt: {', '.join(robots_result['blocked_resources'][:3])}. This prevents AI from understanding page structure — remove these Disallow rules."))
                 ai_r = robots_result.get("ai_agent_results", robots_result.get("ai_results", {}))
                 explicitly_blocked = [n for n, r in ai_r.items()
                                       if r.get("allowed") is False and n in ["GPTBot", "ClaudeBot", "PerplexityBot", "ChatGPT-User"]]
                 if explicitly_blocked:
-                    recs.append(("danger", "Robots.txt", f"AI crawlers explicitly blocked: {', '.join(explicitly_blocked)}. Add Allow rules for these bots to restore AI visibility."))
+                    recs.append(("critical", "Robots.txt", f"AI crawlers explicitly blocked: {', '.join(explicitly_blocked)}. Add Allow rules for these bots to restore AI visibility."))
                 sensitive = robots_result.get("sensitive_paths", robots_result.get("sensitive", {}))
                 critical_exposed = [p for p, r in sensitive.items()
                                     if not r.get("blocked", not r.get("accessible_per_robots", r.get("exposed", False)))
@@ -2060,12 +2074,15 @@ if run_audit or "_audit" in st.session_state:
         if not recs:
             st.markdown(brand_status("Excellent! Your site scores well across all pillars.", "success"), unsafe_allow_html=True)
         else:
+            _severity_order = {"critical": 0, "danger": 0, "warning": 1, "info": 2}
+            recs_sorted = sorted(recs, key=lambda r: _severity_order.get(r[0], 1))
             seen = set()
-            for status, pillar, text in recs:
+            for status, pillar, text in recs_sorted:
                 key = f"{pillar}:{text[:60]}"
                 if key in seen: continue
                 seen.add(key)
-                color = BRAND["danger"] if status == "danger" else BRAND["warning"]
+                color = BRAND["danger"] if status in ("danger", "critical") else \
+                        BRAND["primary"] if status == "info" else BRAND["warning"]
                 st.markdown(f'<div style="background:{BRAND["bg_card"]};border-left:3px solid {color};border-radius:0 10px 10px 0;padding:14px 18px;margin:6px 0;"><div style="margin-bottom:6px;">{brand_pill(pillar, color)}</div><div style="color:{BRAND["white"]};font-size:14px;">{text}</div></div>', unsafe_allow_html=True)
 
         # ── PATTERN BRAIN AI ANALYSIS ─────────────────────────────────────────────
