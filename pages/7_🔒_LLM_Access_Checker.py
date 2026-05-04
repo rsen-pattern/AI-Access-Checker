@@ -48,6 +48,7 @@ from core.ui_helpers import (
     _md_to_html,
     pillar_explainer,
 )
+from core.ui_audit_form import render_audit_form
 
 FAVICON_B64 = base64.b64encode(FAVICON_SVG.encode()).decode()
 
@@ -254,51 +255,7 @@ for _pk in _PREFILL_KEYS:
 
 tab_audit, tab_history = st.tabs(["\U0001f50d  New Audit", "\U0001f4cb  Past Audits"])
 with tab_audit:
-    # ── INPUT: Mandatory URL structure ────────────────────────────────────────────
-    st.markdown(f'<div style="font-weight:600;color:{BRAND["white"]};margin-bottom:8px;">Enter the URLs to audit (minimum 7 pages required)</div>', unsafe_allow_html=True)
-
-    col_home, _ = st.columns([3, 1])
-    with col_home:
-        home_url = st.text_input("Homepage URL", placeholder="https://example.com", key="home")
-
-    col_cat, col_blog, col_prod = st.columns(3)
-    with col_cat:
-        st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Category / Collection Pages (2 required)</div>', unsafe_allow_html=True)
-        cat_url_1 = st.text_input("Category Page 1", placeholder="https://example.com/collections/all", key="cat1", label_visibility="collapsed")
-        cat_url_2 = st.text_input("Category Page 2", placeholder="https://example.com/collections/shoes", key="cat2", label_visibility="collapsed")
-
-    with col_blog:
-        st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Blog / Content Pages (2 required)</div>', unsafe_allow_html=True)
-        blog_url_1 = st.text_input("Blog Page 1", placeholder="https://example.com/blog/post-1", key="blog1", label_visibility="collapsed")
-        blog_url_2 = st.text_input("Blog Page 2", placeholder="https://example.com/blog/post-2", key="blog2", label_visibility="collapsed")
-
-    with col_prod:
-        st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Product Pages (2 required)</div>', unsafe_allow_html=True)
-        prod_url_1 = st.text_input("Product Page 1", placeholder="https://example.com/products/item-1", key="prod1", label_visibility="collapsed")
-        prod_url_2 = st.text_input("Product Page 2", placeholder="https://example.com/products/item-2", key="prod2", label_visibility="collapsed")
-
-    with st.expander("⚙️  Advanced Options"):
-        run_bot_crawl = st.checkbox("Run live bot crawl test (sends requests as each AI bot)", value=True, key="run_bot_crawl")
-        st.markdown("---")
-        st.markdown(f'<div style="font-size:13px;font-weight:600;color:{BRAND["white"]};margin-bottom:4px;">Content / Blog Pages</div>', unsafe_allow_html=True)
-        no_blog = st.checkbox(
-            "This site has no blog — using About / Contact / Story pages instead",
-            value=False,
-            key="no_blog",
-            help="When checked, blog field URLs are treated as general content pages. A scoring penalty applies for the absence of editorial content.",
-        )
-        if no_blog:
-            st.markdown(f'<div style="font-size:12px;color:{BRAND["warning"]};margin-top:4px;">⚠️ A penalty will be applied to the Schema & Entity score for missing editorial blog content. These pages will be evaluated against About/Contact schema expectations instead.</div>', unsafe_allow_html=True)
-
-    run_audit = st.button("Run Audit", type="primary", use_container_width=True) or st.session_state.pop("_pending_rerun", False)
-
-    # Collect and validate URLs
-    all_url_inputs = {
-        "Homepage": home_url,
-        "Category 1": cat_url_1, "Category 2": cat_url_2,
-        "Blog 1": blog_url_1, "Blog 2": blog_url_2,
-        "Product 1": prod_url_1, "Product 2": prod_url_2,
-    }
+    all_url_inputs, no_blog, run_bot_crawl, run_audit = render_audit_form()
 
 with tab_history:
     st.markdown(f'<div style="font-size:22px;font-weight:800;color:{BRAND["white"]};margin-bottom:4px;">Past Audits</div><div style="height:2px;background:linear-gradient(90deg,{BRAND["purple"]},{BRAND["primary"]},transparent);margin-bottom:20px;"></div>', unsafe_allow_html=True)
