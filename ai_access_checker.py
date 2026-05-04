@@ -2111,6 +2111,8 @@ if run_audit or "_audit" in st.session_state:
                     brain_analysis = pattern_brain_analysis(parsed.netloc, all_results_for_brain, get_secret)
                 except Exception:
                     brain_analysis = None
+                if "_audit" in st.session_state:
+                    st.session_state["_audit"]["pattern_brain"] = brain_analysis
 
             if brain_analysis:
                 st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:12px;padding:20px 24px;margin:8px 0;"><div style="color:{BRAND["white"]};font-size:14px;line-height:1.7;">{_md_to_html(brain_analysis)}</div></div>', unsafe_allow_html=True)
@@ -2132,6 +2134,7 @@ if run_audit or "_audit" in st.session_state:
         domain_slug = parsed.netloc.replace(".", "_")
         date_slug   = time.strftime("%Y%m%d")
 
+        _audit_state = st.session_state.get("_audit", {}) or {}
         _audit_dict = {
             "overall":           overall,
             "overall_grade":     overall_grade,
@@ -2150,12 +2153,12 @@ if run_audit or "_audit" in st.session_state:
             "security_score":    security_score,
             "bot_crawl_results": bot_crawl_results,
             "no_blog":           no_blog,
-            "_bifrost_js":       st.session_state.get("_bifrost_js", {}),
-            "_bifrost_robots":   st.session_state.get("_bifrost_robots"),
-            "_bifrost_schema":   st.session_state.get("_bifrost_schema", {}),
-            "_bifrost_llm":      st.session_state.get("_bifrost_llm"),
-            "_bifrost_sem":      st.session_state.get("_bifrost_sem", {}),
-            "pattern_brain":     st.session_state.get("pattern_brain"),
+            "_bifrost_js":       _audit_state.get("_bifrost_js", {})     or st.session_state.get("_bifrost_js", {}),
+            "_bifrost_robots":   _audit_state.get("_bifrost_robots")     or st.session_state.get("_bifrost_robots"),
+            "_bifrost_schema":   _audit_state.get("_bifrost_schema", {}) or st.session_state.get("_bifrost_schema", {}),
+            "_bifrost_llm":      _audit_state.get("_bifrost_llm")        or st.session_state.get("_bifrost_llm"),
+            "_bifrost_sem":      _audit_state.get("_bifrost_sem", {})    or st.session_state.get("_bifrost_sem", {}),
+            "pattern_brain":     _audit_state.get("pattern_brain"),
         }
         report_pdf = _generate_report_pdf(
             audit=_audit_dict,
