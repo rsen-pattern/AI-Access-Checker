@@ -501,226 +501,6 @@ def check_semantic_hierarchy(url):
     return results
 
 
-def generate_report_text(domain, overall, pillar_scores, url_labels, js_results, llm_result, robots_result, schema_results, bot_crawl_results, recs):
-    """Generate a plain-text audit report for PDF/download."""
-    _ss = st.session_state.get("_audit", {})
-    _semantic = _ss.get("semantic_results", {})
-    _security = _ss.get("security_result", {})
-    _brain    = _ss.get("pattern_brain")
-    _bifrost_js     = _ss.get("_bifrost_js", {})
-    _bifrost_robots = _ss.get("_bifrost_robots")
-    _bifrost_schema = _ss.get("_bifrost_schema", {})
-    _bifrost_llm    = _ss.get("_bifrost_llm")
-    _bifrost_sem    = _ss.get("_bifrost_sem", {})
-    _no_blog  = _ss.get("no_blog", False)
-    lines = []
-    lines.append("=" * 70)
-    lines.append("PATTERN — LLM ACCESS CHECKER")
-    lines.append(f"Full LLM Access Audit Report for {domain}")
-    lines.append(f"Generated: {time.strftime('%Y-%m-%d %H:%M UTC')}")
-    lines.append("=" * 70)
-    lines.append("")
-
-    # Overall score
-    lines.append(f"OVERALL LLM READINESS SCORE: {overall}%")
-    lines.append("-" * 40)
-    for name, sc in pillar_scores.items():
-        bar = "█" * (sc // 5) + "░" * (20 - sc // 5)
-        lines.append(f"  {name:<25} {bar} {sc}%")
-    lines.append("")
-
-    # Strongest / Weakest
-    sorted_pillars = sorted(pillar_scores.items(), key=lambda x: x[1])
-    lines.append(f"STRONGEST PILLAR: {sorted_pillars[-1][0]} ({sorted_pillars[-1][1]}%)")
-    lines.append(f"WEAKEST PILLAR:   {sorted_pillars[0][0]} ({sorted_pillars[0][1]}%)")
-    lines.append("")
-
-    # Per-page scores
-    lines.append("PER-PAGE RESULTS")
-    lines.append("-" * 70)
-    for test_url, label in url_labels.items():
-        js_s = js_results.get(test_url, {}).get("score", "—")
-        sc_s = schema_results.get(test_url, {}).get("score", "—")
-        lines.append(f"  {label:<20} JS: {js_s:<5} Schema: {sc_s:<5} {test_url}")
-    lines.append("")
-
-    # Pillar 1: JS Rendering
-    lines.append("PILLAR 1 — JAVASCRIPT RENDERING [PAGE-LEVEL]")
-    lines.append("-" * 40)
-    for test_url, js_r in js_results.items():
-        label = url_labels.get(test_url, test_url)
-        if js_r.get("error"):
-            lines.append(f"  {label}: ERROR — {js_r['error']}")
-            continue
-        lines.append(f"  {label}: {js_r['score']}/100")
-        comp = js_r.get("comparison")
-        if comp:
-            lines.append(f"    Rendered via: {js_r.get('js_provider', 'N/A')}")
-            lines.append(f"    {'Content':<25} {'HTML':>8} {'JS':>8} {'Status':>10}")
-            lines.append(f"    {'-'*55}")
-            for c in comp["comparison"]:
-                st_text = "MISSING" if c["status"] == "missing" else "MINOR GAP" if c["status"] == "warn" else "OK"
-                lines.append(f"    {c['name']:<25} {str(c['html_val']):>8} {str(c['js_val']):>8} {st_text:>10}")
-            html_text = comp["html_summary"]["text_content_length"]
-            js_text = comp["js_summary"]["text_content_length"]
-            if js_text > html_text:
-                pct = round(html_text / max(js_text, 1) * 100)
-                lines.append(f"    Content visibility: {pct}% ({html_text:,} / {js_text:,} chars)")
-        elif js_r["risk_factors"]:
-            for rf in js_r["risk_factors"]:
-                lines.append(f"    ⚠ {rf}")
-    lines.append("")
-
-    # Pillar 2: LLM.txt
-    lines.append("PILLAR 2 — LLM.TXT [SITE-LEVEL]")
-    lines.append("-" * 40)
-    for path, info in llm_result.get("llm_txt", llm_result.get("files", {})).items():
-        status = "✓ Found" if info["found"] else "✗ Not found"
-        lines.append(f"  {path}: {status}")
-    lines.append("")
-
-    # Pillar 3: Robots.txt
-    lines.append("PILLAR 3 — ROBOTS.TXT & CRAWLER ACCESS [SITE-LEVEL]")
-    lines.append("-" * 40)
-    if robots_result["found"]:
-        lines.append(f"  robots.txt: Found")
-        lines.append(f"  Sitemaps: {len(robots_result['sitemaps'])}")
-        lines.append(f"  Blocked resources: {', '.join(robots_result['blocked_resources']) or 'None'}")
-        exposed = sum(1 for p, r in robots_result["sensitive_paths"].items() if not r.get("blocked", not r.get("accessible_per_robots", False)))
-        lines.append(f"  Sensitive paths exposed: {exposed}/{len(robots_result['sensitive_paths'])}")
-        lines.append("  AI Agent Access:")
-        for bn, info in robots_result.get("ai_agent_results", robots_result.get("ai_results", {})).items():
-            allowed_val = info.get("robots_allowed", info.get("allowed"))
-            status = "Allowed" if allowed_val is True else "Blocked" if allowed_val is False else "Unknown"
-            lines.append(f"    {bn}: {status}")
-    else:
-        lines.append("  robots.txt: NOT FOUND")
-    lines.append("")
-
-    # Pillar 4: Schema
-    lines.append("PILLAR 4 — SCHEMA / STRUCTURED DATA [PAGE-LEVEL]")
-    lines.append("-" * 40)
-    for test_url, sr in schema_results.items():
-        label = url_labels.get(test_url, test_url)
-        if sr.get("error"):
-            lines.append(f"  {label}: ERROR")
-            continue
-        schema_data = sr.get("schema", {})
-        schemas = schema_data.get("schemas", [])
-        types = schema_data.get("types", [])
-        validations = schema_data.get("validations", [])
-        grade = sr.get("grade", {})
-        grade_letter = grade.get("letter", "?") if isinstance(grade, dict) else "?"
-        lines.append(f"  {label}: {sr.get('score', 0)}/100 ({grade_letter}) — {len(schemas)} schema item(s)")
-        if types:
-            lines.append(f"    Types: {', '.join(types)}")
-        for v in validations:
-            if v.get("missing"):
-                lines.append(f"    {v.get('type','?')}: {v.get('completeness',0)}% — Missing: {', '.join(v['missing'])}")
-        if _bifrost_schema.get(test_url):
-            lines.append(f"    AI Analysis:")
-            for ln in _bifrost_schema[test_url].splitlines():
-                lines.append(f"      {ln}")
-    lines.append("")
-
-    # Semantic Hierarchy
-    if _semantic:
-        lines.append("SEMANTIC HIERARCHY & CONTENT STRUCTURE [PAGE-LEVEL]")
-        lines.append("-" * 40)
-        for test_url, sem_r in _semantic.items():
-            label = url_labels.get(test_url, test_url)
-            if sem_r.get("error"):
-                lines.append(f"  {label}: ERROR")
-                continue
-            hier_ok = sem_r.get("hierarchy_ok", True)
-            lines.append(f"  {label}: Heading hierarchy {'valid' if hier_ok else 'has issues'}")
-            sem_elems = sem_r.get("semantic_elements", {})
-            if sem_elems:
-                lines.append(f"    Semantic elements: {', '.join(f'{k}={v}' for k,v in sem_elems.items())}")
-            html_len = sem_r.get("html_length", 0)
-            text_len = sem_r.get("text_length", 0)
-            if html_len > 0:
-                ratio = text_len / html_len * 100
-                lines.append(f"    Text-to-HTML ratio: {ratio:.1f}%")
-            if _bifrost_sem.get(test_url):
-                lines.append(f"    AI Analysis:")
-                for ln in _bifrost_sem[test_url].splitlines():
-                    lines.append(f"      {ln}")
-        lines.append("")
-
-    # Bot crawl
-    if bot_crawl_results:
-        lines.append("LIVE BOT CRAWL RESULTS")
-        lines.append("-" * 40)
-        for bn, r in bot_crawl_results.items():
-            if r.get("error"):
-                lines.append(f"  {bn}: ERROR — {r['error']}")
-            else:
-                status = "Allowed" if r["is_allowed"] else "BLOCKED"
-                lines.append(f"  {bn} ({r['company']}): {status} — HTTP {r['status_code']} — {r['content_length']:,} chars — {r['load_time']}s")
-        lines.append("")
-
-    # Security
-    sec_findings = _security.get("findings", {})
-    sec_total = _security.get("total_exposed", 0)
-    lines.append("SECURITY & EXPOSURE [SITE-LEVEL]")
-    lines.append("-" * 40)
-    lines.append(f"  Score: {_security.get('score', 100)}/100")
-    cf = robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}
-    if cf.get("bot_fight_mode_likely") or (cf.get("cloudflare_detected") and cf.get("blocked_bots")):
-        lines.append(f"  ⚠ Anti-bot protection active — blocking: {', '.join(cf.get('blocked_bots', []))}")
-    if sec_total == 0 and not sec_findings.get("html_exposure") and not sec_findings.get("robots_allowlist"):
-        lines.append("  No sensitive paths accessible — all probed paths returned 403/404/401")
-    else:
-        for cat, lbl_str in [("critical", "Critical"), ("backend", "Backend"), ("customer", "Customer")]:
-            for f in sec_findings.get(cat, []):
-                lines.append(f"  [{lbl_str}] {f['path']} — HTTP {f['status']} ({f['size']:,} bytes)")
-        for item in sec_findings.get("html_exposure", []):
-            lines.append(f"  [HTML] {item}")
-        for item in sec_findings.get("robots_allowlist", []):
-            lines.append(f"  [Robots Allow] {item['bot']}: {item['path']}")
-    lines.append("")
-
-    # Recommendations
-    lines.append("PRIORITY RECOMMENDATIONS")
-    lines.append("-" * 40)
-    for i, (status, pillar, text) in enumerate(recs, 1):
-        icon = "CRITICAL" if status == "danger" else "WARNING"
-        lines.append(f"  {i}. [{icon} — {pillar}] {text}")
-    if _no_blog:
-        lines.append(f"  {len(recs)+1}. [INFO — Content] No blog audited — consider editorial content for AI citation potential.")
-    lines.append("")
-
-    # Bifrost AI analyses — Robots & LLM (site-level)
-    if _bifrost_robots:
-        lines.append("AI ANALYSIS — ROBOTS & CRAWL")
-        lines.append("-" * 40)
-        for ln in _bifrost_robots.splitlines():
-            lines.append(f"  {ln}")
-        lines.append("")
-    if _bifrost_llm:
-        lines.append("AI ANALYSIS — AI DISCOVERABILITY")
-        lines.append("-" * 40)
-        for ln in _bifrost_llm.splitlines():
-            lines.append(f"  {ln}")
-        lines.append("")
-
-    # Pattern Brain
-    if _brain:
-        lines.append("=" * 70)
-        lines.append("PATTERN BRAIN — AI EXECUTIVE SUMMARY")
-        lines.append("=" * 70)
-        for ln in _brain.splitlines():
-            lines.append(f"  {ln}")
-        lines.append("")
-
-    lines.append("=" * 70)
-    lines.append("Report generated by Pattern LLM Access Checker")
-    lines.append("https://pattern.com")
-    lines.append("=" * 70)
-
-    return "\n".join(lines)
-
 
 
 
@@ -2354,11 +2134,6 @@ if run_audit or "_audit" in st.session_state:
             "Semantic Hierarchy": semantic_score,
             "Security":           security_score,
         }
-        report_text = generate_report_text(
-            parsed.netloc, overall, pillar_scores_dict, url_labels,
-            js_results, llm_result, robots_result, schema_results,
-            bot_crawl_results, recs,
-        )
         domain_slug = parsed.netloc.replace(".", "_")
         date_slug   = time.strftime("%Y%m%d")
 
@@ -2410,7 +2185,7 @@ if run_audit or "_audit" in st.session_state:
             "bot_crawl_results": bot_crawl_results,
         }), indent=2)
 
-        dl_col1, dl_col2, dl_col3 = st.columns(3)
+        dl_col1, dl_col2 = st.columns(2)
         with dl_col1:
             st.download_button(
                 label="⬇ PDF Report",
@@ -2423,16 +2198,6 @@ if run_audit or "_audit" in st.session_state:
             )
             st.caption("Formatted PDF — scores, tables, recommendations.")
         with dl_col2:
-            st.download_button(
-                label="⬇ Plain Text",
-                data=report_text,
-                file_name=f"llm_access_audit_{domain_slug}_{date_slug}.txt",
-                mime="text/plain",
-                use_container_width=True,
-                key="dl_txt",
-            )
-            st.caption("Open in any editor or import to Notion.")
-        with dl_col3:
             st.download_button(
                 label="⬇ JSON Data",
                 data=report_json,
