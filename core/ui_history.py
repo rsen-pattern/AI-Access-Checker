@@ -82,6 +82,7 @@ def _render_auth_gate(message: str) -> None:
                 _user, _err = auth_sign_in(_email, _password)
                 if _user:
                     st.session_state["_history_user"] = _user
+                    st.session_state["_view"] = "new"
                     st.rerun()
                 else:
                     st.error("Login failed — check your email and password.")
