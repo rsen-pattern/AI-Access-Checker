@@ -410,7 +410,7 @@ def fetch_js_rendered(url, get_secret):
             r = requests.get("https://app.scrapingbee.com/api/v1/",
                 params={"api_key": key, "url": url, "render_js": "true", "premium_proxy": "false"},
                 timeout=45)
-            if r.status_code == 200 and len(r.text) > 200:
+            if r.status_code == 200 and len(r.text) > 200 and r.text.lstrip().startswith("<"):
                 return r.text, "ScrapingBee", None
         except Exception: pass
 
@@ -421,7 +421,7 @@ def fetch_js_rendered(url, get_secret):
                 params={"key": key, "url": url, "render_js": "true", "asp": "false"}, timeout=45)
             if r.status_code == 200:
                 html = r.json().get("result", {}).get("content", "")
-                if html and len(html) > 200: return html, "Scrapfly", None
+                if html and len(html) > 200 and html.lstrip().startswith("<"): return html, "Scrapfly", None
         except Exception: pass
 
     key = get_secret("BROWSERLESS_API_KEY", "")
@@ -429,7 +429,7 @@ def fetch_js_rendered(url, get_secret):
         try:
             r = requests.post(f"https://chrome.browserless.io/content?token={key}",
                 json={"url": url, "waitFor": 3000}, timeout=45)
-            if r.status_code == 200 and len(r.text) > 200:
+            if r.status_code == 200 and len(r.text) > 200 and r.text.lstrip().startswith("<"):
                 return r.text, "Browserless", None
         except Exception: pass
 
