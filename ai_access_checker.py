@@ -104,6 +104,14 @@ if _qp_audit_id and _qp_audit_id != _current_audit_id:
         st.query_params.pop("audit", None)
         st.warning("The shared report could not be loaded (saved data is incomplete). Please run a new audit.")
 
+# ── Unauthenticated landing redirect ─────────────────────────────────────────
+# Path (d): no ?audit param, not signed in → show the history-view auth gate.
+# Must run AFTER the ?audit handler so shared links (path c) still go to
+# _view = "report" and never hit this redirect.
+if not is_history_authenticated() and not _qp_audit_id:
+    if st.session_state.get("_view") != "history":
+        st.session_state["_view"] = "history"
+
 # ── Bulk rerun queue processor ───────────────────────────────────────────────
 # Must run BEFORE rendering so _pending_rerun is set before render_audit_form
 # consumes it.
