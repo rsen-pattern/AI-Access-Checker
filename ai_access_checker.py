@@ -63,6 +63,9 @@ st.markdown(f"""
     .p-score-label {{ font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1.5px; color: {BRAND['text_secondary']}; margin-top: 6px; }}
     .nav-pill-active {{ background: linear-gradient(135deg, {BRAND['purple']}, {BRAND['primary']}); color: {BRAND['white']} !important; border: none !important; border-radius: 20px !important; font-weight: 700 !important; padding: 6px 20px !important; }}
     .nav-pill {{ background: {BRAND['bg_surface']}; color: {BRAND['text_secondary']} !important; border: 1px solid {BRAND['border']} !important; border-radius: 20px !important; padding: 6px 20px !important; }}
+    /* Past Audits row hover affordance */
+    .hist-row {{ transition: background 0.15s ease; cursor: pointer; }}
+    .hist-row:hover {{ background: {BRAND['bg_card_hover']} !important; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -86,6 +89,35 @@ if "_view_origin" not in st.session_state:
 # Reload if the requested audit ID differs from the currently loaded one.
 _qp_audit_id = st.query_params.get("audit")
 _current_audit_id = st.session_state.get("_loaded_audit_id")
+
+# ── Direct PDF download: ?audit=<id>&format=pdf ───────────────────────────────
+# Intercept before the regular ?audit handler so st.stop() exits cleanly.
+# No auth required — same public access as shared report links.
+_qp_format = st.query_params.get("format")
+if _qp_audit_id and _qp_format == "pdf":
+    _pdf_row = load_audit_by_id(_qp_audit_id)
+    if _pdf_row and _pdf_row.get("full_results"):
+        from report_pdf import generate_report_pdf as _gen_pdf
+        from core.ui_recommendations import build_recommendations as _build_recs_pdf
+        _pdf_fr     = _pdf_row["full_results"]
+        _pdf_recs   = _build_recs_pdf(_pdf_fr, _pdf_fr.get("no_blog", False))
+        _pdf_bytes  = _gen_pdf(audit=_pdf_fr, domain=_pdf_row.get("domain", "audit"), recs=_pdf_recs)
+        _pdf_dslug  = (_pdf_row.get("domain") or "audit").replace(".", "_")
+        _pdf_dtslug = (_pdf_row.get("audited_at") or "")[:10]
+        st.download_button(
+            "Download PDF",
+            data=_pdf_bytes,
+            file_name=f"llm_access_audit_{_pdf_dslug}_{_pdf_dtslug}.pdf",
+            mime="application/pdf",
+            type="primary",
+            key="direct_pdf_dl",
+        )
+        st.caption(f"PDF for {_pdf_row.get('domain')} · {_pdf_dtslug}")
+        st.stop()
+    else:
+        st.error("Report not found.")
+        st.stop()
+
 if _qp_audit_id and _qp_audit_id != _current_audit_id:
     _qp_row = load_audit_by_id(_qp_audit_id)
     if _qp_row and _qp_row.get("full_results"):

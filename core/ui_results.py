@@ -72,27 +72,28 @@ def render_results(audit: dict, get_secret_fn) -> None:
     Must be called inside `with tab_audit:`. Returns nothing — all output
     is rendered via st.markdown / st.download_button / etc.
     """
-    all_test_urls     = audit.get("all_test_urls", [])
-    url_labels        = audit.get("url_labels", {})
-    js_results        = audit.get("js_results", {})
-    js_score          = audit.get("js_score", 0)
-    robots_result     = audit.get("robots_result", {"found": False, "score": 0})
-    robots_score      = audit.get("robots_score", 0)
-    schema_results    = audit.get("schema_results", {})
-    schema_score      = audit.get("schema_score", 0)
-    llm_result        = audit.get("llm_result", {})
-    llm_score         = audit.get("llm_score", 0)
-    semantic_results  = audit.get("semantic_results", {})
-    semantic_score    = audit.get("semantic_score", 0)
-    security_result   = audit.get("security_result", {"found": False, "score": 0})
-    security_score    = audit.get("security_score", 0)
-    bot_crawl_results = audit.get("bot_crawl_results", {})
-    overall           = audit.get("overall", 0)
-    overall_grade     = audit.get("overall_grade", "?")
-    overall_result    = audit.get("overall_result", {"score": overall, "grade": overall_grade})
-    no_blog           = audit.get("no_blog", False)
-    url               = all_test_urls[0] if all_test_urls else "https://example.com"
-    parsed            = urlparse(url)
+    with st.spinner("Loading report…"):
+        all_test_urls     = audit.get("all_test_urls", [])
+        url_labels        = audit.get("url_labels", {})
+        js_results        = audit.get("js_results", {})
+        js_score          = audit.get("js_score", 0)
+        robots_result     = audit.get("robots_result", {"found": False, "score": 0})
+        robots_score      = audit.get("robots_score", 0)
+        schema_results    = audit.get("schema_results", {})
+        schema_score      = audit.get("schema_score", 0)
+        llm_result        = audit.get("llm_result", {})
+        llm_score         = audit.get("llm_score", 0)
+        semantic_results  = audit.get("semantic_results", {})
+        semantic_score    = audit.get("semantic_score", 0)
+        security_result   = audit.get("security_result", {"found": False, "score": 0})
+        security_score    = audit.get("security_score", 0)
+        bot_crawl_results = audit.get("bot_crawl_results", {})
+        overall           = audit.get("overall", 0)
+        overall_grade     = audit.get("overall_grade", "?")
+        overall_result    = audit.get("overall_result", {"score": overall, "grade": overall_grade})
+        no_blog           = audit.get("no_blog", False)
+        url               = all_test_urls[0] if all_test_urls else "https://example.com"
+        parsed            = urlparse(url)
 
     # ── Report view header strip ──────────────────────────────────────────
     # Shown when _view == "report". Provides back navigation, domain summary,
@@ -126,12 +127,18 @@ def render_results(audit: dict, get_secret_fn) -> None:
                 else BRAND["warning"] if overall >= 35
                 else BRAND["danger"]
             )
+            _rh_grade = next(v for k, v in sorted({90:"A",75:"B",60:"C",40:"D",0:"F"}.items(), reverse=True) if overall >= k)
+            _rh_badge = (
+                f'<span style="background:{_sc_color}22;color:{_sc_color};'
+                f'padding:4px 10px;border-radius:6px;font-size:13px;font-weight:700;">'
+                f'{overall}% {_rh_grade}</span>'
+            )
             _rh_subtitle = f"audited {_rh_date} · " if _rh_date else ""
             st.markdown(
                 f'<div style="padding:6px 0;">'
                 f'<span style="font-size:1.1rem;font-weight:700;color:{BRAND["white"]};">{_rh_domain}</span>'
-                f'<span style="color:{BRAND["text_secondary"]};font-size:0.85rem;margin-left:10px;">{_rh_subtitle}'
-                f'<span style="color:{_sc_color};font-weight:700;">{_rh_score_str}</span></span>'
+                f'<span style="color:{BRAND["text_secondary"]};font-size:0.85rem;margin-left:10px;">{_rh_subtitle}</span>'
+                f'{_rh_badge}'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -194,10 +201,17 @@ def render_results(audit: dict, get_secret_fn) -> None:
                         st.rerun()
                     if _rh_share_open and _rh_share_url:
                         st.markdown(
-                            f'<div style="font-size:11px;color:{BRAND["teal"]};margin-top:4px;">✓ Shareable link — copy and send</div>',
+                            f'<div style="font-size:11px;color:{BRAND["teal"]};margin-top:4px;">✓ Shareable links — copy and send</div>',
                             unsafe_allow_html=True,
                         )
-                        st.code(_rh_share_url, language=None)
+                        _rh_pdf_share = f"{_rh_share_url}&format=pdf"
+                        _rs_c1, _rs_c2 = st.columns(2)
+                        with _rs_c1:
+                            st.caption("View report")
+                            st.code(_rh_share_url, language=None)
+                        with _rs_c2:
+                            st.caption("Direct PDF")
+                            st.code(_rh_pdf_share, language=None)
 
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
 
