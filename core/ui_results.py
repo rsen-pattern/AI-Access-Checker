@@ -292,7 +292,7 @@ def render_results(audit: dict, get_secret_fn) -> None:
         with st.expander(f"{label} — Score: {js_r['score']}/100" + (f" (via {provider})" if provider else "")):
 
             # Frameworks detected
-            frameworks = js_r.get("frameworks") or []
+            frameworks = [f for f in (js_r.get("frameworks") or []) if f and len(f) == 3]
             if frameworks:
                 st.markdown("**JS Frameworks Detected:**")
                 for name, severity, note in frameworks:
