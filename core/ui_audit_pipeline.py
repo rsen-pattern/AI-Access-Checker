@@ -198,6 +198,91 @@ def execute_audit_pipeline(
                 text=f"[1/6] JS Rendering — {_done_count}/{n_pages} done · {elapsed}s elapsed")
     js_score = round(sum(r.get("score", 0) for r in js_results.values()) / len(js_results))
 
+    # ── ANTI-BOT BLOCK DETECTION ──────────────────────────────────────────
+    # Three independent signals; any TWO triggering is a confident block detection.
+    _block_signals = {"signature": False, "uniform_titles": False, "uniform_lengths": False}
+    _block_details = {}
+
+    # Signal 1: Known soft-block signature matched in any page title
+    _signature_hits = []
+    for u, jr in js_results.items():
+        content = jr.get("content", {})
+        title = (content.get("title") or "").lower()
+        try:
+            from core.llm_access_checks import detect_soft_block
+            is_blocked, sig = detect_soft_block(title, title)
+        except Exception:
+            is_blocked, sig = False, ""
+        if is_blocked:
+            _signature_hits.append((u, sig))
+    if _signature_hits:
+        _block_signals["signature"] = True
+        _block_details["signature_hits"] = _signature_hits
+
+    # Signal 2: All pages share identical (non-empty) titles
+    _titles = [
+        (jr.get("content", {}).get("title") or "").strip()
+        for jr in js_results.values()
+        if not jr.get("error")
+    ]
+    _titles_nonempty = [t for t in _titles if t]
+    if len(_titles_nonempty) >= 3 and len(set(_titles_nonempty)) == 1:
+        _block_signals["uniform_titles"] = True
+        _block_details["uniform_title"] = _titles_nonempty[0]
+
+    # Signal 3: Text content lengths suspiciously uniform across all pages
+    _lengths = [
+        jr.get("content", {}).get("text_content_length", 0)
+        for jr in js_results.values()
+        if not jr.get("error")
+    ]
+    _lengths_nonzero = [L for L in _lengths if L > 0]
+    if len(_lengths_nonzero) >= 3:
+        _length_spread = max(_lengths_nonzero) - min(_lengths_nonzero)
+        if _length_spread < 50 and max(_lengths_nonzero) < 2000:
+            _block_signals["uniform_lengths"] = True
+            _block_details["length_range"] = (min(_lengths_nonzero), max(_lengths_nonzero))
+
+    _n_signals = sum(_block_signals.values())
+    _audit_blocked = _n_signals >= 2
+    _audit_warning = _n_signals == 1
+
+    if _audit_blocked:
+        progress.empty()
+        st.error(
+            "🛡️ **Crawl blocked by anti-bot protection — audit halted.**\n\n"
+            f"Detected: {', '.join(k for k, v in _block_signals.items() if v)}\n\n"
+            f"All {len(_titles_nonempty)} pages returned identical or near-identical "
+            "content, indicating the site served a challenge/block page instead of "
+            "real content. Continuing would produce misleading scores.\n\n"
+            "**What to do:**\n"
+            "- If you have permission to audit this site, ask the site owner to "
+            "allowlist Pattern's audit infrastructure or your test environment IP.\n"
+            "- If the site uses Cloudflare Bot Fight Mode, Imperva, Akamai Bot "
+            "Manager, PerimeterX, or DataDome, these systems specifically block "
+            "automated crawlers including legitimate audit tools.\n"
+            "- Try running the audit through a residential proxy, or contact "
+            "Pattern for an authenticated audit option."
+        )
+        if _block_details.get("signature_hits"):
+            with st.expander("Block page signatures detected"):
+                for u, sig in _block_details["signature_hits"]:
+                    st.caption(f"`{u}` → matched: **{sig}**")
+        if _block_details.get("uniform_title"):
+            st.caption(f'All pages returned title: *"{_block_details["uniform_title"]}"*')
+        if _block_details.get("length_range"):
+            lo, hi = _block_details["length_range"]
+            st.caption(f"Text content length range: {lo}–{hi} chars (suspiciously uniform)")
+        return None  # Halts the pipeline cleanly — caller already handles None
+
+    if _audit_warning:
+        st.warning(
+            "⚠️ **Possible anti-bot interference detected.** "
+            f"One signal triggered ({', '.join(k for k, v in _block_signals.items() if v)}). "
+            "Audit continuing, but review results carefully — some pages may have "
+            "returned challenge content instead of the real site."
+        )
+
     # ── PILLAR 2: ROBOTS & CRAWLABILITY (site-level) ──────────────────────
     elapsed = round(time.time() - audit_start)
     progress.progress(18, text=f"[2/6] Robots & Crawlability — fetching robots.txt + Cloudflare check… · {elapsed}s elapsed")
@@ -314,6 +399,7 @@ def execute_audit_pipeline(
         "overall_grade": overall_grade,
         "overall_result": overall_result,
         "no_blog":       no_blog,
+        "_block_warning": {"signals": _block_signals, "details": _block_details} if _audit_warning else None,
     }
     _a = st.session_state["_audit"]
     # ── Unpack results (fresh audit or cached) ────────────────────────────
@@ -402,6 +488,7 @@ def _save_audit_to_supabase(audit: dict, parsed, all_test_urls: list, no_blog: b
         "overall_result":    overall_result,
         "no_blog":           no_blog,
         "pattern_brain":     None,  # populated after Pattern Brain renders below
+        "_block_warning":    audit.get("_block_warning"),
     }
     _pillar_scores_payload = {
         "JS Rendering":       js_score,

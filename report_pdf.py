@@ -1162,6 +1162,12 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
     sec_findings = security_result.get("findings", {}) or {}
     sec_total = security_result.get("total_exposed", 0)
 
+    if sec_findings.get("uniform_response_warning"):
+        story.append(_callout(
+            f"<b>Untrusted security findings.</b> {sec_findings['uniform_response_warning']}",
+            kind="warning"))
+        story.append(_sp(8))
+
     if sec_total == 0 and not sec_findings.get("html_exposure") and not sec_findings.get("robots_allowlist"):
         story.append(_status_dot(
             "No sensitive paths accessible to AI bots — all probed paths returned 403/404/401",

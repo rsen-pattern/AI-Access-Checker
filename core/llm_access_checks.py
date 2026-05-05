@@ -41,6 +41,52 @@ BROWSER_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
+# ─── ANTI-BOT BLOCK PAGE DETECTION ────────────────────────────────────────────
+# Soft-blocks return HTTP 200 with a challenge/interstitial page. These signatures
+# are the title or first-paragraph text that appears on the block page itself.
+SOFT_BLOCK_SIGNATURES = [
+    # Imperva / Incapsula
+    "pardon our interruption",
+    "incapsula incident id",
+    "_imp_apg_r_",
+    # Akamai Bot Manager
+    "access denied · akamai",
+    "reference&#32;&#35;",
+    # PerimeterX / HUMAN
+    "px-captcha",
+    "please verify you are a human",
+    "perimeterx",
+    # DataDome
+    "datadome",
+    "blocked by datadome",
+    # Cloudflare managed challenge served as 200
+    "checking your browser before accessing",
+    "cf-browser-verification",
+    "ray id:",
+    # Generic
+    "just a moment",
+    "please enable javascript and cookies",
+    "this site is protected by",
+    "verify you are human",
+    "are you a robot",
+    "captcha is required",
+]
+
+
+def detect_soft_block(html: str, title: str = "") -> tuple[bool, str]:
+    """Detect if an HTTP 200 response is actually a soft-block / challenge page.
+
+    Returns (is_blocked, signature_matched). Signature is empty if not blocked.
+    """
+    if not html:
+        return False, ""
+    haystack = (title + " " + html[:5000]).lower()
+    for sig in SOFT_BLOCK_SIGNATURES:
+        if sig in haystack:
+            return True, sig
+    return False, ""
+
+
 # ─── GRADE THRESHOLDS ─────────────────────────────────────────────────────────
 GRADE_THRESHOLDS = [
     (85, "A", "Excellent"),
@@ -321,10 +367,16 @@ def fetch(url, timeout=15, user_agent=None):
     headers = {"User-Agent": user_agent or BROWSER_UA}
     try:
         r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        _is_blocked, _sig = detect_soft_block(r.text)
+        r.soft_blocked = _is_blocked
+        r.soft_block_signature = _sig
         return r, None
     except requests.exceptions.SSLError:
         try:
             r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True, verify=False)
+            _is_blocked, _sig = detect_soft_block(r.text)
+            r.soft_blocked = _is_blocked
+            r.soft_block_signature = _sig
             return r, "SSL warning (certificate issue)"
         except Exception as e:
             return None, str(e)
@@ -756,6 +808,40 @@ def check_security_exposure(base_url, robots_raw: str = "", homepage_html: str =
     with ThreadPoolExecutor(max_workers=6) as _pool:
         for cat, path, resp in _pool.map(lambda t: _probe_path(*t), _path_tasks):
             _path_results.append((cat, path, resp))
+
+    # Filter out responses that are actually anti-bot block pages.
+    # A soft-block returns 200 for every URL with identical content — without this
+    # filter we'd report every sensitive path as "exposed" when none actually are.
+    _all_resp_sizes = [len(r.text) for _, _, r in _path_results if r is not None]
+    _filtered_results = []
+    _uniform_block_detected = False
+
+    # Cross-check: if 80%+ of probed paths returned the same byte size (within 50 bytes),
+    # suppress all findings — they're all hitting the same block page.
+    if len(_all_resp_sizes) >= 5:
+        from collections import Counter
+        _size_buckets = Counter(s // 50 for s in _all_resp_sizes)
+        _top_bucket, _top_count = _size_buckets.most_common(1)[0]
+        if _top_count / len(_all_resp_sizes) >= 0.8:
+            _uniform_block_detected = True
+            findings["uniform_response_warning"] = (
+                f"{_top_count}/{len(_all_resp_sizes)} sensitive path probes returned "
+                f"~{_top_bucket * 50}-byte responses. This is consistent with an "
+                f"anti-bot system serving a block page for every URL. Sensitive path "
+                f"exposures below should be treated as unreliable."
+            )
+
+    if not _uniform_block_detected:
+        for cat, path, resp in _path_results:
+            if resp is None:
+                _filtered_results.append((cat, path, resp))
+                continue
+            _is_blocked, _ = detect_soft_block(resp.text)
+            if not _is_blocked:
+                _filtered_results.append((cat, path, resp))
+        _path_results = _filtered_results
+    else:
+        _path_results = []  # Suppress all findings — uniform block page detected
 
     _exposed_counts = {"critical": 0, "backend": 0, "customer": 0}
     _deductions = {"critical": 25, "backend": 15, "customer": 10}
