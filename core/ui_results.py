@@ -273,12 +273,35 @@ def render_results(audit: dict, get_secret_fn) -> None:
             for x in ("403", "blocked", "cloudflare", "challenge", "forbidden")
         )
     ]
+
+    # Detect retroactive soft-block: pages with known challenge-page titles
+    _softblock_urls = []
+    _SOFT_TITLE_SIGS = (
+        "pardon our interruption", "access denied", "checking your browser",
+        "just a moment", "perimeterx", "datadome", "verify you are human",
+    )
+    for _u, _jr in js_results.items():
+        _title = (_jr.get("content", {}).get("title") or "").lower()
+        if any(sig in _title for sig in _SOFT_TITLE_SIGS):
+            _softblock_urls.append(_u)
+    # Uniform text length across all pages also indicates a block page
+    _page_lengths = [
+        _jr.get("content", {}).get("text_content_length", 0)
+        for _jr in js_results.values() if not _jr.get("error")
+    ]
+    _page_lengths_nz = [L for L in _page_lengths if L > 0]
+    if len(_page_lengths_nz) >= 3 and (max(_page_lengths_nz) - min(_page_lengths_nz)) < 50 and max(_page_lengths_nz) < 2000:
+        _softblock_urls = list(js_results.keys())
+
     _cf_detected = robots_result.get("cloudflare", {}).get("cloudflare_detected", False)
     _cf_blocking = robots_result.get("cloudflare", {}).get("bot_fight_mode_likely", False)
     _bots_blocked = robots_result.get("cloudflare", {}).get("blocked_bots", [])
     _all_bots_blocked = bot_crawl_results and all(not r.get("is_allowed") for r in bot_crawl_results.values())
 
-    if _cf_blocking or _antibot_urls or _antibot_schema or _all_bots_blocked:
+    # _block_warning from pipeline (1-signal warning that didn't halt the audit)
+    _block_warning = audit.get("_block_warning")
+
+    if _cf_blocking or _antibot_urls or _antibot_schema or _all_bots_blocked or _softblock_urls:
         _blocked_pages = list(dict.fromkeys([url_labels.get(u, u) for u in _antibot_urls + _antibot_schema]))
         _bot_list = ", ".join(_bots_blocked) if _bots_blocked else ("All tested bots" if _all_bots_blocked else "")
         _detail_parts = []
@@ -288,12 +311,26 @@ def render_results(audit: dict, get_secret_fn) -> None:
             _detail_parts.append(f"Crawl failed on: {', '.join(_blocked_pages)}")
         if _all_bots_blocked and not _cf_blocking:
             _detail_parts.append("All AI bots were blocked in the live crawl test")
+        if _softblock_urls and not _antibot_urls:
+            _detail_parts.append(
+                f"All audited pages returned identical/near-identical content "
+                f"({len(_softblock_urls)} pages) — strong indicator of an anti-bot "
+                f"soft-block (Imperva, Akamai, PerimeterX, DataDome, or similar)"
+            )
         _detail_html = " · ".join(_detail_parts)
         st.markdown(
             f'<div style="background:#ff4b4b18;border:1px solid #ff4b4b55;border-left:4px solid #ff4b4b;border-radius:0 10px 10px 0;padding:16px 20px;margin:12px 0;">'
             f'<div style="font-size:14px;font-weight:700;color:#ff4b4b;margin-bottom:6px;">🛡️ Anti-Bot Protection Detected — Results May Be Incomplete</div>'
             f'<div style="font-size:13px;color:{BRAND["white"]};line-height:1.6;">{_detail_html}</div>'
             f'<div style="font-size:12px;color:{BRAND["text_secondary"]};margin-top:8px;">Scores for affected pages are based on what our crawlers could access. Manual verification is recommended. Security section will still show exposure data collected before the block.</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    elif _block_warning:
+        _bw_signals = ", ".join(k for k, v in _block_warning.get("signals", {}).items() if v)
+        st.markdown(
+            f'<div style="background:{BRAND["warning"]}18;border:1px solid {BRAND["warning"]}55;border-left:4px solid {BRAND["warning"]};border-radius:0 10px 10px 0;padding:12px 18px;margin:12px 0;">'
+            f'<div style="font-size:13px;font-weight:600;color:{BRAND["warning"]};">⚠️ Possible anti-bot interference — review results carefully ({_bw_signals})</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -845,6 +882,9 @@ def render_results(audit: dict, get_secret_fn) -> None:
     st.markdown(brand_score_bar(security_score), unsafe_allow_html=True)
     sec_findings = security_result.get("findings", {})
     sec_total_exposed = security_result.get("total_exposed", 0)
+
+    if sec_findings.get("uniform_response_warning"):
+        st.warning(f"🛡️ {sec_findings['uniform_response_warning']}")
 
     if sec_total_exposed == 0 and not sec_findings.get("html_exposure") and not sec_findings.get("robots_allowlist"):
         st.markdown(brand_status("No sensitive paths accessible to AI bots — all probed paths returned 403/404/401", "success"), unsafe_allow_html=True)
