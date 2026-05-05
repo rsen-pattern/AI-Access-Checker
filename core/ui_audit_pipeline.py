@@ -500,7 +500,7 @@ def _save_audit_to_supabase(audit: dict, parsed, all_test_urls: list, no_blog: b
     }
     _bulk_id = st.session_state.pop("_bulk_rerun_current_id", None)
     if _bulk_id:
-        # Bulk rerun — UPDATE existing row in place
+        # In-place rerun (single row from history OR bulk rerun queue) — UPDATE existing row
         _saved_id, _save_err = update_audit_in_db(
             audit_id=_bulk_id,
             overall=overall,
@@ -509,20 +509,27 @@ def _save_audit_to_supabase(audit: dict, parsed, all_test_urls: list, no_blog: b
             full_results=_full_results_payload,
         )
         if _save_err:
-            st.warning(f"Bulk rerun: could not update row {_bulk_id} — {_save_err}")
-        # Advance queue and update progress
+            st.warning(f"Rerun: could not update row {_bulk_id} — {_save_err}")
+
+        # Only advance the queue if there IS one (bulk rerun in progress)
         if st.session_state.get("_bulk_rerun_queue"):
             st.session_state["_bulk_rerun_queue"].pop(0)
-        _bq_prog = st.session_state.get("_bulk_rerun_progress", {"total": 0, "done": 0})
-        _bq_prog["done"] = _bq_prog.get("done", 0) + 1
-        st.session_state["_bulk_rerun_progress"] = _bq_prog
-        if not st.session_state.get("_bulk_rerun_queue"):
-            # All done — clean up and notify
-            st.success(f"Bulk rerun complete — all {_bq_prog['total']} audits updated with fresh scores.")
-            st.session_state.pop("_bulk_rerun_progress", None)
+            _bq_prog = st.session_state.get("_bulk_rerun_progress", {"total": 0, "done": 0})
+            _bq_prog["done"] = _bq_prog.get("done", 0) + 1
+            st.session_state["_bulk_rerun_progress"] = _bq_prog
+            if not st.session_state.get("_bulk_rerun_queue"):
+                # All done — clean up and notify
+                st.success(f"Bulk rerun complete — all {_bq_prog['total']} audits updated with fresh scores.")
+                st.session_state.pop("_bulk_rerun_progress", None)
+            else:
+                # More items left — continue immediately
+                st.rerun()
         else:
-            # More items left — continue immediately
-            st.rerun()
+            # Single-row rerun from history — update query params so user sees the fresh report
+            if _saved_id:
+                st.query_params["audit"] = str(_saved_id)
+                st.session_state["_loaded_audit_id"] = str(_saved_id)
+            st.success("Audit rerun complete — row updated with fresh scores.")
     else:
         # Normal single audit — check for existing record and ask user what to do
         _existing = load_audit_history(domain=parsed.netloc, limit=1)

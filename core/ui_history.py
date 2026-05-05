@@ -202,9 +202,9 @@ def _render_audit_row(
                     st.session_state.pop(_del_key, None)
                     st.rerun()
         else:
-            # Normal row — [0.4, 3, 1, 3, 1, 0.7, 0.7, 0.5]
-            _c_chk, _c_info, _c_score, _c_bars, _c_open, _c_pdf, _c_share, _c_del = st.columns(
-                [0.4, 3, 1, 3, 1, 0.7, 0.7, 0.5]
+            # Normal row — [0.4, 3, 1, 3, 1, 0.7, 0.7, 0.7, 0.5]
+            _c_chk, _c_info, _c_score, _c_bars, _c_open, _c_rerun, _c_pdf, _c_share, _c_del = st.columns(
+                [0.4, 3, 1, 3, 1, 0.7, 0.7, 0.7, 0.5]
             )
 
             with _c_chk:
@@ -258,6 +258,49 @@ def _render_audit_row(
                     st.session_state["_view_origin"]         = "history"
                     st.query_params["audit"]                 = _audit_id
                     st.rerun()
+
+            with _c_rerun:
+                _bulk_active = bool(st.session_state.get("_bulk_rerun_queue"))
+                if _audit_id and _has_full and is_history_authenticated() and not _bulk_active:
+                    if st.button(
+                        "🔄",
+                        key=f"rerun_{_pfx}",
+                        use_container_width=True,
+                        help="Rerun this audit (overwrites existing row)",
+                    ):
+                        _label_to_key = {
+                            "Homepage": "home", "Category 1": "cat1", "Category 2": "cat2",
+                            "Blog 1": "blog1", "Blog 2": "blog2",
+                            "Content 1": "blog1", "Content 2": "blog2",
+                            "Product 1": "prod1", "Product 2": "prod2",
+                        }
+                        _inv = {v: k for k, v in (_fr.get("url_labels") or {}).items()}
+                        for _lbl, _wk in _label_to_key.items():
+                            if _lbl in _inv:
+                                st.session_state[f"_prefill_{_wk}"] = _inv[_lbl]
+                        st.session_state["_prefill_no_blog"]       = bool(_fr.get("no_blog", False))
+                        st.session_state["_prefill_run_bot_crawl"] = bool(_fr.get("bot_crawl_results"))
+                        # Mark as in-place rerun — pipeline will UPDATE not INSERT
+                        st.session_state["_bulk_rerun_current_id"] = str(_audit_id)
+                        st.session_state.pop("_audit", None)
+                        st.session_state.pop("_loaded_audit_id", None)
+                        st.session_state.pop("_loaded_from_history", None)
+                        st.query_params.pop("audit", None)
+                        st.session_state["_pending_rerun"] = True
+                        st.session_state["_view"] = "new"
+                        st.rerun()
+                elif _audit_id and _has_full:
+                    _help = (
+                        "Sign in to rerun audits" if not is_history_authenticated()
+                        else "Bulk rerun in progress — wait until it completes"
+                    )
+                    st.button(
+                        "🔄",
+                        key=f"rerun_{_pfx}",
+                        use_container_width=True,
+                        disabled=True,
+                        help=_help,
+                    )
 
             with _c_pdf:
                 if _has_full:
