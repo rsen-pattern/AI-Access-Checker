@@ -1670,14 +1670,14 @@ def check_llm_discoverability(base_url, homepage_html):
 # Model: openai/gpt-4o-mini
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _bifrost_call(api_key: str, prompt: str, max_tokens: int = 700) -> str | None:
+def _bifrost_call(api_key: str, prompt: str, max_tokens: int = 700, temperature: float = 0.3) -> str | None:
     """Shared helper for all Bifrost API calls."""
     try:
         resp = requests.post(
             "https://bifrost.pattern.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={"model": "openai/gpt-4o-mini", "max_tokens": max_tokens,
-                  "temperature": 0.3, "messages": [
+                  "temperature": temperature, "messages": [
                       {"role": "system", "content": "You write in Australian English. Use Australian spelling and vocabulary throughout (e.g. optimise, analyse, catalogue, organisation, colour, prioritise)."},
                       {"role": "user", "content": prompt},
                   ]},
@@ -1728,18 +1728,66 @@ def pattern_brain_analysis(url, all_results, get_secret) -> str | None:
         f"Sensitive paths exposed to AI: {security.get('total_exposed', 0)}",
     ])
 
-    return _bifrost_call(api_key, f"""You are an AI Search Visibility expert at Pattern, an ecommerce growth agency.
+    # Identify the weakest pillar so the strategic recommendation can be anchored to it
+    _pillar_only = {k: v for k, v in scores.items()
+                    if k in ("js", "robots", "schema", "llm") and isinstance(v, int)}
+    if _pillar_only:
+        weakest_key, weakest_score = min(_pillar_only.items(), key=lambda x: x[1])
+        weakest_label = {
+            "js": "JavaScript Rendering",
+            "robots": "Robots & Crawlability",
+            "schema": "Schema & Entity",
+            "llm": "AI Discoverability",
+        }.get(weakest_key, weakest_key)
+    else:
+        weakest_label, weakest_score = "Unknown", 0
+
+    result = _bifrost_call(api_key, f"""You are an AI Search Visibility expert at Pattern, an ecommerce growth agency.
 Analyse this website's AI readiness audit data and write a clear, actionable summary for a brand manager.
 
 {summary}
 
-Provide exactly:
-1. EXECUTIVE SUMMARY (2 sentences max): Overall AI readiness status and single biggest risk
-2. TOP 3 CRITICAL ISSUES: What's actively losing AI visibility right now. Be specific — name the exact fix.
-3. TOP 3 QUICK WINS THIS WEEK: Actions completable in under 2 hours each. Be specific and practical.
-4. STRATEGIC RECOMMENDATION: One higher-effort initiative for this quarter with expected impact.
+WEAKEST PILLAR: {weakest_label} at {weakest_score}%
 
-Be direct and specific. No jargon. One concrete action per point. Focus on business impact.""")
+Provide exactly:
+
+1. EXECUTIVE SUMMARY (2 sentences max): Overall AI readiness status and single biggest risk. Reference one specific finding from the data above.
+
+2. TOP 3 CRITICAL ISSUES: What's actively losing AI visibility right now. Each must:
+   - Name the exact pillar or check it relates to
+   - State the specific fix (not "improve X" — say what to change)
+   - Be drawn from the audit data above, not general SEO advice
+
+3. TOP 3 QUICK WINS: Actions completable in under 2 hours each. Each must:
+   - Reference a specific gap from the audit data (a missing field, a blocked bot, a misconfigured file)
+   - State the concrete action (e.g. "Add gtin13 to Product schema on /products/* pages" not "improve product schema")
+   - Avoid generic advice like "add more content" or "improve site speed"
+
+4. STRATEGIC RECOMMENDATION: One higher-effort initiative for this quarter.
+   STRICT REQUIREMENTS:
+   - Must directly address {weakest_label} (the weakest pillar at {weakest_score}%)
+   - Must reference at least two specific data points from the audit above (a score, a missing schema type, a blocked bot, a specific page type, a Cloudflare setting, etc.)
+   - State the expected outcome in concrete, measurable terms tied to AI visibility (e.g. "restore GPTBot access to product pages, enabling AI shopping agents to index 12 product URLs" — NOT "boost organic traffic" or "improve engagement")
+   - Do NOT recommend any of the following unless the audit data specifically points to them as the weakest area: topic clusters, content hubs, internal linking strategy, "comprehensive content strategy", blog posting cadence, keyword research, or general SEO improvements
+   - If the weakest pillar is technical (JS Rendering, Robots, Schema), the recommendation must be technical — not a content initiative
+   - Maximum 3 sentences
+
+Be direct and specific. No jargon. One concrete action per point. Focus on what this specific site needs to fix, based on what the audit found.""", max_tokens=900, temperature=0.5)
+
+    # Soft warning if the model still falls back to generic ecommerce advice
+    if result:
+        _generic_phrases = [
+            "comprehensive content strategy",
+            "topic clusters",
+            "boost organic traffic",
+            "internal linking strategy",
+        ]
+        _hits = [p for p in _generic_phrases if p.lower() in result.lower()]
+        if len(_hits) >= 2:
+            import sys
+            print(f"[pattern_brain] Warning: output may be generic. Matched phrases: {_hits}", file=sys.stderr)
+
+    return result
 
 
 def analyse_schema_quality(url, schema_data, get_secret) -> str | None:
