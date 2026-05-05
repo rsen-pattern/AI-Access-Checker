@@ -961,6 +961,25 @@ def render_results(audit: dict, get_secret_fn) -> None:
             if "_audit" in st.session_state:
                 st.session_state["_audit"]["pattern_brain"] = brain_analysis
 
+            # Persist Pattern Brain back to Supabase so PDF downloads from history include it
+            _loaded_id = st.session_state.get("_loaded_audit_id")
+            if brain_analysis and _loaded_id:
+                try:
+                    from core.persistence import get_supabase
+                    _sb = get_supabase()
+                    if _sb:
+                        _existing = _sb.table("audits").select("full_results").eq("id", str(_loaded_id)).limit(1).execute().data
+                        if _existing and _existing[0].get("full_results"):
+                            _fr = _existing[0]["full_results"]
+                            if not _fr.get("pattern_brain"):
+                                _fr["pattern_brain"] = brain_analysis
+                                for _key in ("_bifrost_js", "_bifrost_robots", "_bifrost_schema", "_bifrost_llm", "_bifrost_sem"):
+                                    if _key in st.session_state.get("_audit", {}):
+                                        _fr[_key] = st.session_state["_audit"][_key]
+                                _sb.table("audits").update({"full_results": _fr}).eq("id", str(_loaded_id)).execute()
+                except Exception:
+                    pass  # Non-fatal — PDF will still generate from session state
+
         if brain_analysis:
             st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:12px;padding:20px 24px;margin:8px 0;"><div style="color:{BRAND["white"]};font-size:14px;line-height:1.7;">{_md_to_html(brain_analysis)}</div></div>', unsafe_allow_html=True)
         else:
