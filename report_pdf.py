@@ -613,6 +613,25 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
     bifrost_sem    = audit.get("_bifrost_sem", {}) or {}
     pattern_brain  = audit.get("pattern_brain")
 
+    # Compute audit reliability for PDF warnings
+    _block_decision = audit.get("_block_decision", {})
+    _pdf_n_blocked_bots = sum(
+        1 for r in bot_crawl.values() if r.get("status_code") in (403, 503, 429)
+    ) if bot_crawl else 0
+    _pdf_bot_block_rate = _pdf_n_blocked_bots / max(len(bot_crawl), 1) if bot_crawl else 0
+    _pdf_total_checks = len(js_results) + len(schema_results) + len(semantic_results)
+    _pdf_failed_checks = (
+        sum(1 for r in js_results.values()       if r.get("error"))
+      + sum(1 for r in schema_results.values()   if r.get("error"))
+      + sum(1 for r in semantic_results.values() if r.get("error"))
+    )
+    _pdf_pillar_fail_rate = _pdf_failed_checks / max(_pdf_total_checks, 1)
+    _audit_unreliable = (
+        _block_decision.get("warning", False)
+        or _pdf_bot_block_rate >= 0.5
+        or _pdf_pillar_fail_rate >= 0.5
+    )
+
     grade_letter = overall_grade.get("letter", "?") if isinstance(overall_grade, dict) else "?"
     grade_label  = overall_grade.get("label", "")  if isinstance(overall_grade, dict) else ""
 
@@ -641,6 +660,18 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
 
     # ── 1. COVER PAGE ────────────────────────────────────────────────────────
     story.extend(_cover_page_flowables(domain, overall, grade_letter, grade_label))
+
+    # ── UNRELIABILITY WARNING (page 2, before pillar scores) ─────────────────
+    if _audit_unreliable:
+        story.append(_callout(
+            "<b>This audit may be unreliable.</b> The crawler was blocked by anti-bot "
+            "protection — most page checks failed and/or AI bots received 403 responses "
+            "from the WAF. Scores below are based on incomplete data and should not be "
+            "presented as a complete assessment. To get an accurate audit, the site "
+            "owner must allowlist Pattern's audit infrastructure.",
+            kind="warning",
+        ))
+        story.append(_sp(8))
 
     # ── 2. PILLAR SCORE TABLE (page 2) ───────────────────────────────────────
     story.append(_sp(12))
@@ -726,6 +757,19 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
     if pattern_brain:
         story.append(PageBreak())
         story.extend(_exec_summary_flowables(pattern_brain))
+    elif _audit_unreliable:
+        story.append(PageBreak())
+        story.append(_sp(12))
+        story.append(Paragraph("Executive Summary — Suppressed", _S_H2()))
+        story.append(_sp(6))
+        story.append(_callout(
+            "Pattern Brain executive summary was not generated for this audit because "
+            "the underlying data is unreliable (the site blocked the crawler). "
+            "Generating recommendations from blocked-crawl data produces confident-"
+            "sounding but factually wrong advice — so the model was not invoked. "
+            "Resolve the block and rerun the audit to receive a real executive summary.",
+            kind="warning",
+        ))
 
     # ── 7. PER-PAGE SUMMARY ──────────────────────────────────────────────────
     story.append(PageBreak())

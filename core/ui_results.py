@@ -95,6 +95,28 @@ def render_results(audit: dict, get_secret_fn) -> None:
         url               = all_test_urls[0] if all_test_urls else "https://example.com"
         parsed            = urlparse(url)
 
+    # ── AUDIT RELIABILITY FLAG ────────────────────────────────────────────
+    # Computed once; used by Pattern Brain, per-pillar AI calls, and banners.
+    _block_decision = audit.get("_block_decision", {})
+    _n_blocked_bots = (
+        sum(1 for r in bot_crawl_results.values() if r.get("status_code") in (403, 503, 429))
+        if bot_crawl_results else 0
+    )
+    _bot_block_rate = _n_blocked_bots / max(len(bot_crawl_results), 1) if bot_crawl_results else 0
+    _total_page_checks = len(js_results) + len(schema_results) + len(semantic_results)
+    _failed_page_checks = (
+        sum(1 for r in js_results.values()       if r.get("error"))
+      + sum(1 for r in schema_results.values()   if r.get("error"))
+      + sum(1 for r in semantic_results.values() if r.get("error"))
+    )
+    _pillar_failure_rate = _failed_page_checks / max(_total_page_checks, 1)
+    # Master flag — suppresses all Bifrost calls when the crawl was blocked
+    _audit_unreliable = (
+        _block_decision.get("warning", False)
+        or _bot_block_rate >= 0.5
+        or _pillar_failure_rate >= 0.5
+    )
+
     # ── Report view header strip ──────────────────────────────────────────
     # Shown when _view == "report". Provides back navigation, domain summary,
     # and action buttons (Rerun, PDF, Share).
@@ -298,9 +320,6 @@ def render_results(audit: dict, get_secret_fn) -> None:
     _bots_blocked = robots_result.get("cloudflare", {}).get("blocked_bots", [])
     _all_bots_blocked = bot_crawl_results and all(not r.get("is_allowed") for r in bot_crawl_results.values())
 
-    # _block_warning from pipeline (1-signal warning that didn't halt the audit)
-    _block_warning = audit.get("_block_warning")
-
     if _cf_blocking or _antibot_urls or _antibot_schema or _all_bots_blocked or _softblock_urls:
         _blocked_pages = list(dict.fromkeys([url_labels.get(u, u) for u in _antibot_urls + _antibot_schema]))
         _bot_list = ", ".join(_bots_blocked) if _bots_blocked else ("All tested bots" if _all_bots_blocked else "")
@@ -326,15 +345,51 @@ def render_results(audit: dict, get_secret_fn) -> None:
             f'</div>',
             unsafe_allow_html=True,
         )
-    elif _block_warning:
-        _bw_signals = ", ".join(k for k, v in _block_warning.get("signals", {}).items() if v)
-        st.markdown(
-            f'<div style="background:{BRAND["warning"]}18;border:1px solid {BRAND["warning"]}55;border-left:4px solid {BRAND["warning"]};border-radius:0 10px 10px 0;padding:12px 18px;margin:12px 0;">'
-            f'<div style="font-size:13px;font-weight:600;color:{BRAND["warning"]};">⚠️ Possible anti-bot interference — review results carefully ({_bw_signals})</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-    elif _cf_detected:
+
+    # Hard-block banner: fires for 403-based blocks that don't match soft-block signatures
+    if _audit_unreliable and not _cf_blocking and not _antibot_urls and not _softblock_urls:
+        _hr_reasons = []
+        if _bot_block_rate >= 0.5:
+            _hr_reasons.append(
+                f"<strong>{_n_blocked_bots} of {len(bot_crawl_results)} AI bots returned 403/503/429</strong> "
+                f"— the site is hard-blocking AI crawlers at the WAF/CDN level"
+            )
+        if _pillar_failure_rate >= 0.5:
+            _hr_reasons.append(
+                f"<strong>{_failed_page_checks} of {_total_page_checks} per-page checks failed</strong> "
+                f"— most page audits could not fetch real content"
+            )
+        if _hr_reasons:
+            st.markdown(
+                f'<div style="background:#ff4b4b18;border:1px solid #ff4b4b55;'
+                f'border-left:4px solid #ff4b4b;border-radius:0 10px 10px 0;'
+                f'padding:16px 20px;margin:12px 0;">'
+                f'<div style="font-size:14px;font-weight:700;color:#ff4b4b;margin-bottom:6px;">'
+                f'🛡️ Audit Unreliable — Crawl Blocked at WAF Level</div>'
+                f'<div style="font-size:13px;color:{BRAND["white"]};line-height:1.6;">'
+                f'{"<br>".join(_hr_reasons)}</div>'
+                f'<div style="font-size:12px;color:{BRAND["text_secondary"]};margin-top:10px;">'
+                f'Scores below are based on incomplete data and should NOT be presented as a '
+                f'real assessment. Pattern Brain analysis has been suppressed. To get an '
+                f'accurate audit, the site owner must allowlist Pattern\'s infrastructure.'
+                f'</div></div>',
+                unsafe_allow_html=True,
+            )
+    elif _audit_unreliable:
+        # 1-signal warning path (block_decision.warning) without a harder-coded banner above
+        _bw_signals = ", ".join(k for k, v in _block_decision.get("signals", {}).items() if v)
+        if _bw_signals:
+            st.markdown(
+                f'<div style="background:{BRAND["warning"]}18;border:1px solid {BRAND["warning"]}55;'
+                f'border-left:4px solid {BRAND["warning"]};border-radius:0 10px 10px 0;'
+                f'padding:12px 18px;margin:12px 0;">'
+                f'<div style="font-size:13px;font-weight:600;color:{BRAND["warning"]};">'
+                f'⚠️ Possible anti-bot interference — review results carefully ({_bw_signals})</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    if _cf_detected and not _cf_blocking:
         st.markdown(
             f'<div style="background:{BRAND["warning"]}18;border:1px solid {BRAND["warning"]}55;border-left:4px solid {BRAND["warning"]};border-radius:0 10px 10px 0;padding:12px 18px;margin:12px 0;">'
             f'<div style="font-size:13px;font-weight:600;color:{BRAND["warning"]};">⚠️ Cloudflare detected on this site — monitor bot access settings to ensure AI crawlers are not blocked</div>'
@@ -496,11 +551,14 @@ def render_results(audit: dict, get_secret_fn) -> None:
                     gap_color = BRAND["danger"] if pct < 30 else BRAND["warning"] if pct < 70 else BRAND["teal"]
                     st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:10px;padding:14px 18px;margin:12px 0;"><div style="font-size:11px;color:{BRAND["text_secondary"]};text-transform:uppercase;letter-spacing:1px;">Content Visibility</div><div style="font-size:20px;font-weight:700;color:{gap_color};">{pct}% <span style="font-size:14px;opacity:0.5;">of content visible to AI</span></div><div style="font-size:12px;color:{BRAND["text_secondary"]};">HTML: {html_text:,} chars · JS-rendered: {js_text:,} chars · Hidden: {js_text - html_text:,} chars</div></div>', unsafe_allow_html=True)
 
-                # AI Analysis
-                try:
-                    ai_analysis = ai_analyse_js_gap(test_url, comp, label, get_secret_fn)
-                except Exception:
+                # AI Analysis (suppressed when crawl is unreliable)
+                if _audit_unreliable:
                     ai_analysis = None
+                else:
+                    try:
+                        ai_analysis = ai_analyse_js_gap(test_url, comp, label, get_secret_fn)
+                    except Exception:
+                        ai_analysis = None
                 if "_audit" in st.session_state:
                     st.session_state["_audit"].setdefault("_bifrost_js", {})[test_url] = ai_analysis
                 if ai_analysis:
@@ -587,11 +645,14 @@ def render_results(audit: dict, get_secret_fn) -> None:
         robots_url = robots_result.get("robots", {}).get("url", robots_result.get("url", ""))
         st.markdown(brand_status(f"No robots.txt found at {robots_url}", "danger"), unsafe_allow_html=True)
 
-    # AI Analysis — What This Means
-    try:
-        robots_ai = analyse_robots_access(parsed.netloc, robots_result, get_secret_fn)
-    except Exception:
+    # AI Analysis — What This Means (suppressed when crawl is unreliable)
+    if _audit_unreliable:
         robots_ai = None
+    else:
+        try:
+            robots_ai = analyse_robots_access(parsed.netloc, robots_result, get_secret_fn)
+        except Exception:
+            robots_ai = None
     if "_audit" in st.session_state:
         st.session_state["_audit"]["_bifrost_robots"] = robots_ai
     if robots_ai:
@@ -696,11 +757,14 @@ def render_results(audit: dict, get_secret_fn) -> None:
             if not schemas:
                 st.markdown(brand_status("No Schema.org structured data found on this page", "warning"), unsafe_allow_html=True)
 
-            # AI Analysis — What This Means
-            try:
-                schema_ai = analyse_schema_quality(test_url, schemas, get_secret_fn)
-            except Exception:
+            # AI Analysis — What This Means (suppressed when crawl is unreliable)
+            if _audit_unreliable:
                 schema_ai = None
+            else:
+                try:
+                    schema_ai = analyse_schema_quality(test_url, schemas, get_secret_fn)
+                except Exception:
+                    schema_ai = None
             if "_audit" in st.session_state:
                 st.session_state["_audit"].setdefault("_bifrost_schema", {})[test_url] = schema_ai
             if schema_ai:
@@ -768,11 +832,14 @@ def render_results(audit: dict, get_secret_fn) -> None:
                 s = "success" if pts > 0 else "info"
                 st.markdown(brand_status(f"+{pts} pts — {lbl}", s), unsafe_allow_html=True)
 
-    # AI Analysis — What This Means
-    try:
-        llm_ai = analyse_llm_discoverability(parsed.netloc, llm_result, get_secret_fn)
-    except Exception:
+    # AI Analysis — What This Means (suppressed when crawl is unreliable)
+    if _audit_unreliable:
         llm_ai = None
+    else:
+        try:
+            llm_ai = analyse_llm_discoverability(parsed.netloc, llm_result, get_secret_fn)
+        except Exception:
+            llm_ai = None
     if "_audit" in st.session_state:
         st.session_state["_audit"]["_bifrost_llm"] = llm_ai
     if llm_ai:
@@ -853,11 +920,14 @@ def render_results(audit: dict, get_secret_fn) -> None:
                     ratio = text_len / html_len * 100
                     st.markdown(brand_status(f"Text-to-HTML ratio: {ratio:.1f}%", "success" if ratio >= 15 else "warning"), unsafe_allow_html=True)
 
-            # AI Analysis — What This Means
-            try:
-                sem_ai = analyse_semantic_hierarchy(test_url, sem_r, label, get_secret_fn)
-            except Exception:
+            # AI Analysis — What This Means (suppressed when crawl is unreliable)
+            if _audit_unreliable:
                 sem_ai = None
+            else:
+                try:
+                    sem_ai = analyse_semantic_hierarchy(test_url, sem_r, label, get_secret_fn)
+                except Exception:
+                    sem_ai = None
             if "_audit" in st.session_state:
                 st.session_state["_audit"].setdefault("_bifrost_sem", {})[test_url] = sem_ai
             if sem_ai:
@@ -957,73 +1027,99 @@ def render_results(audit: dict, get_secret_fn) -> None:
         st.markdown(f'### {brand_pill("PATTERN BRAIN", BRAND["purple"])} AI Analysis', unsafe_allow_html=True)
         st.caption("Powered by Pattern's AI via Bifrost · openai/gpt-4o-mini")
 
-        with st.spinner("Generating Pattern Brain analysis..."):
-
-            # Build compact results dict for the brain
-            all_results_for_brain = {
-                "robots": robots_result if isinstance(robots_result, dict) else {},
-                "cloudflare": (robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}),
-                "schema_summary": {
-                    "types_found": [t for sr in schema_results.values() for t in sr.get("schema", {}).get("types", [])],
-                    "has_org_sameas": any(sr.get("entity", {}).get("has_org_sameas") for sr in schema_results.values()),
-                    "has_author": any(sr.get("entity", {}).get("has_author") for sr in schema_results.values()),
-                    "has_date_published": any(sr.get("entity", {}).get("has_date_published") for sr in schema_results.values()),
-                },
-                "ecommerce_summary": {
-                    "has_gtin": any(sr.get("ecommerce", {}).get("has_gtin_or_mpn") for sr in schema_results.values()),
-                    "has_return_policy": any(sr.get("ecommerce", {}).get("has_return_policy_schema") for sr in schema_results.values()),
-                },
-                "llm_discoverability": {
-                    "has_llm_txt": llm_result.get("score", 0) > 25,
-                    "ai_info_found": bool(llm_result.get("ai_info_page", {}).get("found")),
-                    "has_ucp": bool(llm_result.get("wellknown", {}).get("has_ucp")),
-                    "has_mcp": bool(llm_result.get("wellknown", {}).get("has_mcp")),
-                },
-                "semantic_summary": {
-                    "has_lead_paragraph": False,
-                    "cluster_count": 0,
-                    "auth_citations": 0,
-                    "vague_phrases": 0,
-                },
-                "pillar_scores": {
-                    "overall": overall,
-                    "js": js_score,
-                    "robots": robots_score,
-                    "schema": schema_score,
-                    "llm": llm_score,
-                },
-            }
-
-            try:
-                brain_analysis = pattern_brain_analysis(parsed.netloc, all_results_for_brain, get_secret_fn)
-            except Exception:
-                brain_analysis = None
+        if _audit_unreliable:
+            # Don't spend a Bifrost call on garbage data
+            _ur_reasons = []
+            if _bot_block_rate >= 0.5:
+                _ur_reasons.append(f"{_n_blocked_bots}/{len(bot_crawl_results)} AI bots blocked at the WAF level")
+            if _pillar_failure_rate >= 0.5:
+                _ur_reasons.append(f"{_failed_page_checks}/{_total_page_checks} per-page checks failed")
+            if not _ur_reasons and _block_decision.get("warning"):
+                _ur_reasons.append("anti-bot interference signal detected")
+            st.markdown(
+                f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["warning"]}55;'
+                f'border-left:3px solid {BRAND["warning"]};border-radius:0 10px 10px 0;'
+                f'padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;">'
+                f'<strong style="color:{BRAND["warning"]};">⚠️ Pattern Brain analysis suppressed.</strong><br/>'
+                f'The crawl appears to have been blocked: '
+                f'{"; ".join(_ur_reasons)}. '
+                f'Generating an executive summary from this data would produce '
+                f'misleading recommendations based on phantom findings.<br/><br/>'
+                f'<strong>What to do:</strong> Resolve the block (contact the site owner '
+                f'to allowlist Pattern\'s audit infrastructure), then rerun this audit.'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
             if "_audit" in st.session_state:
-                st.session_state["_audit"]["pattern_brain"] = brain_analysis
-
-            # Persist Pattern Brain back to Supabase so PDF downloads from history include it
-            _loaded_id = st.session_state.get("_loaded_audit_id")
-            if brain_analysis and _loaded_id:
-                try:
-                    from core.persistence import get_supabase
-                    _sb = get_supabase()
-                    if _sb:
-                        _existing = _sb.table("audits").select("full_results").eq("id", str(_loaded_id)).limit(1).execute().data
-                        if _existing and _existing[0].get("full_results"):
-                            _fr = _existing[0]["full_results"]
-                            if not _fr.get("pattern_brain"):
-                                _fr["pattern_brain"] = brain_analysis
-                                for _key in ("_bifrost_js", "_bifrost_robots", "_bifrost_schema", "_bifrost_llm", "_bifrost_sem"):
-                                    if _key in st.session_state.get("_audit", {}):
-                                        _fr[_key] = st.session_state["_audit"][_key]
-                                _sb.table("audits").update({"full_results": _fr}).eq("id", str(_loaded_id)).execute()
-                except Exception:
-                    pass  # Non-fatal — PDF will still generate from session state
-
-        if brain_analysis:
-            st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:12px;padding:20px 24px;margin:8px 0;"><div style="color:{BRAND["white"]};font-size:14px;line-height:1.7;">{_md_to_html(brain_analysis)}</div></div>', unsafe_allow_html=True)
+                st.session_state["_audit"]["pattern_brain"] = None
         else:
-            st.caption("Pattern Brain analysis unavailable — check BIFROST_API_KEY in Streamlit secrets.")
+            with st.spinner("Generating Pattern Brain analysis..."):
+
+                # Build compact results dict for the brain
+                all_results_for_brain = {
+                    "robots": robots_result if isinstance(robots_result, dict) else {},
+                    "cloudflare": (robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}),
+                    "schema_summary": {
+                        "types_found": [t for sr in schema_results.values() for t in sr.get("schema", {}).get("types", [])],
+                        "has_org_sameas": any(sr.get("entity", {}).get("has_org_sameas") for sr in schema_results.values()),
+                        "has_author": any(sr.get("entity", {}).get("has_author") for sr in schema_results.values()),
+                        "has_date_published": any(sr.get("entity", {}).get("has_date_published") for sr in schema_results.values()),
+                    },
+                    "ecommerce_summary": {
+                        "has_gtin": any(sr.get("ecommerce", {}).get("has_gtin_or_mpn") for sr in schema_results.values()),
+                        "has_return_policy": any(sr.get("ecommerce", {}).get("has_return_policy_schema") for sr in schema_results.values()),
+                    },
+                    "llm_discoverability": {
+                        "has_llm_txt": llm_result.get("score", 0) > 25,
+                        "ai_info_found": bool(llm_result.get("ai_info_page", {}).get("found")),
+                        "has_ucp": bool(llm_result.get("wellknown", {}).get("has_ucp")),
+                        "has_mcp": bool(llm_result.get("wellknown", {}).get("has_mcp")),
+                    },
+                    "semantic_summary": {
+                        "has_lead_paragraph": False,
+                        "cluster_count": 0,
+                        "auth_citations": 0,
+                        "vague_phrases": 0,
+                    },
+                    "pillar_scores": {
+                        "overall": overall,
+                        "js": js_score,
+                        "robots": robots_score,
+                        "schema": schema_score,
+                        "llm": llm_score,
+                    },
+                }
+
+                try:
+                    brain_analysis = pattern_brain_analysis(parsed.netloc, all_results_for_brain, get_secret_fn)
+                except Exception:
+                    brain_analysis = None
+                if "_audit" in st.session_state:
+                    st.session_state["_audit"]["pattern_brain"] = brain_analysis
+
+                # Persist Pattern Brain back to Supabase so PDF downloads from history include it
+                _loaded_id = st.session_state.get("_loaded_audit_id")
+                if brain_analysis and _loaded_id:
+                    try:
+                        from core.persistence import get_supabase
+                        _sb = get_supabase()
+                        if _sb:
+                            _existing = _sb.table("audits").select("full_results").eq("id", str(_loaded_id)).limit(1).execute().data
+                            if _existing and _existing[0].get("full_results"):
+                                _fr = _existing[0]["full_results"]
+                                if not _fr.get("pattern_brain"):
+                                    _fr["pattern_brain"] = brain_analysis
+                                    for _key in ("_bifrost_js", "_bifrost_robots", "_bifrost_schema", "_bifrost_llm", "_bifrost_sem"):
+                                        if _key in st.session_state.get("_audit", {}):
+                                            _fr[_key] = st.session_state["_audit"][_key]
+                                    _sb.table("audits").update({"full_results": _fr}).eq("id", str(_loaded_id)).execute()
+                    except Exception:
+                        pass  # Non-fatal — PDF will still generate from session state
+
+            if brain_analysis:
+                st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:12px;padding:20px 24px;margin:8px 0;"><div style="color:{BRAND["white"]};font-size:14px;line-height:1.7;">{_md_to_html(brain_analysis)}</div></div>', unsafe_allow_html=True)
+            else:
+                st.caption("Pattern Brain analysis unavailable — check BIFROST_API_KEY in Streamlit secrets.")
 
     # ── DOWNLOAD REPORT ──────────────────────────────────────────────────
     st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
