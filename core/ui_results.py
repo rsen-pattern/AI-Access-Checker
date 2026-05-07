@@ -175,11 +175,12 @@ def render_results(audit: dict, get_secret_fn) -> None:
                 # Two-step PDF download
                 _rh_pdf_ready = st.session_state.get("_rh_pdf_ready")
                 if _rh_pdf_ready:
-                    from core.ui_recommendations import build_recommendations as _build_recs
-                    _rh_recs = _build_recs(audit, no_blog)
-                    _rh_pdf_bytes = _generate_report_pdf(
-                        audit=audit, domain=parsed.netloc, recs=_rh_recs
-                    )
+                    with st.spinner("Preparing PDF report..."):
+                        from core.ui_recommendations import build_recommendations as _build_recs
+                        _rh_recs = _build_recs(audit, no_blog)
+                        _rh_pdf_bytes = _generate_report_pdf(
+                            audit=audit, domain=parsed.netloc, recs=_rh_recs
+                        )
                     st.download_button(
                         "📥 PDF",
                         data=_rh_pdf_bytes,
@@ -1065,11 +1066,12 @@ def render_results(audit: dict, get_secret_fn) -> None:
         "_bifrost_sem":      st.session_state.get("_audit", {}).get("_bifrost_sem", {}),
         "pattern_brain":     st.session_state.get("_audit", {}).get("pattern_brain"),
     }
-    report_pdf = _generate_report_pdf(
-        audit=_audit_dict,
-        domain=parsed.netloc,
-        recs=recs,
-    )
+    with st.spinner("Preparing PDF report..."):
+        report_pdf = _generate_report_pdf(
+            audit=_audit_dict,
+            domain=parsed.netloc,
+            recs=recs,
+        )
     report_json = json.dumps(_make_json_safe({
         "domain":        parsed.netloc,
         "overall_score": overall,

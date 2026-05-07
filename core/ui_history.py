@@ -305,14 +305,15 @@ def _render_audit_row(
             with _c_pdf:
                 if _has_full:
                     if _pdf_ready:
-                        from core.ui_recommendations import build_recommendations as _br
-                        from report_pdf import generate_report_pdf as _grpdf
-                        from urllib.parse import urlparse as _urlparse
-                        _pdf_urls  = _fr.get("all_test_urls", [])
-                        _pdf_url   = _pdf_urls[0] if _pdf_urls else "https://example.com"
-                        _pdf_dom   = _urlparse(_pdf_url).netloc or _dom
-                        _pdf_recs  = _br(_fr, bool(_fr.get("no_blog", False)))
-                        _pdf_bytes = _grpdf(audit=_fr, domain=_pdf_dom, recs=_pdf_recs)
+                        with st.spinner("Preparing PDF report..."):
+                            from core.ui_recommendations import build_recommendations as _br
+                            from report_pdf import generate_report_pdf as _grpdf
+                            from urllib.parse import urlparse as _urlparse
+                            _pdf_urls  = _fr.get("all_test_urls", [])
+                            _pdf_url   = _pdf_urls[0] if _pdf_urls else "https://example.com"
+                            _pdf_dom   = _urlparse(_pdf_url).netloc or _dom
+                            _pdf_recs  = _br(_fr, bool(_fr.get("no_blog", False)))
+                            _pdf_bytes = _grpdf(audit=_fr, domain=_pdf_dom, recs=_pdf_recs)
                         st.download_button(
                             "📥",
                             data=_pdf_bytes,
