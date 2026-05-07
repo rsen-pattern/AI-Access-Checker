@@ -40,21 +40,22 @@ def render_audit_form() -> tuple:
 
     col_home, _ = st.columns([3, 1])
     with col_home:
-        home_url = st.text_input("Homepage URL", placeholder="https://example.com", key="home")
+        st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Homepage URL <span style="color:{BRAND["danger"]};">*</span></div>', unsafe_allow_html=True)
+        home_url = st.text_input("Homepage URL", placeholder="https://example.com", key="home", label_visibility="collapsed")
 
     col_cat, col_blog, col_prod = st.columns(3)
     with col_cat:
-        st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Category / Collection Pages (2 required)</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Category / Collection Pages (2 required) <span style="color:{BRAND["danger"]};">*</span></div>', unsafe_allow_html=True)
         cat_url_1 = st.text_input("Category Page 1", placeholder="https://example.com/collections/all", key="cat1", label_visibility="collapsed")
         cat_url_2 = st.text_input("Category Page 2", placeholder="https://example.com/collections/shoes", key="cat2", label_visibility="collapsed")
 
     with col_blog:
-        st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Blog / Content Pages (2 required)</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Blog / Content Pages (2 required) <span style="color:{BRAND["danger"]};">*</span></div>', unsafe_allow_html=True)
         blog_url_1 = st.text_input("Blog Page 1", placeholder="https://example.com/blog/post-1", key="blog1", label_visibility="collapsed")
         blog_url_2 = st.text_input("Blog Page 2", placeholder="https://example.com/blog/post-2", key="blog2", label_visibility="collapsed")
 
     with col_prod:
-        st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Product Pages (2 required)</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};margin-bottom:4px;">Product Pages (2 required) <span style="color:{BRAND["danger"]};">*</span></div>', unsafe_allow_html=True)
         prod_url_1 = st.text_input("Product Page 1", placeholder="https://example.com/products/item-1", key="prod1", label_visibility="collapsed")
         prod_url_2 = st.text_input("Product Page 2", placeholder="https://example.com/products/item-2", key="prod2", label_visibility="collapsed")
 

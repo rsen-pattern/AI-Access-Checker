@@ -98,7 +98,7 @@ def generate_gauge_svg(score: int, label: str = "", size: int = 200):
         stroke_color, status_text, status_color = BRAND["danger"], "Critical", BRAND["danger"]
 
     offset = -(circumference - arc_length) / 2 - (circumference * (45/360))
-    svg = f'''<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}" xmlns="http://www.w3.org/2000/svg">
+    svg = f'''<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="LLM Readiness Score: {score}% {status_text}">
       <defs><filter id="glow"><feGaussianBlur stdDeviation="3" result="coloredBlur"/><feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
       <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" style="stop-color:{BRAND['purple']};stop-opacity:1" /><stop offset="100%" style="stop-color:{stroke_color};stop-opacity:1" /></linearGradient></defs>
       <circle cx="{cx}" cy="{cy}" r="{radius}" fill="none" stroke="{BRAND['border']}" stroke-width="{stroke_width}" stroke-dasharray="{arc_length} {circumference - arc_length}" stroke-dashoffset="{offset}" stroke-linecap="round"/>
