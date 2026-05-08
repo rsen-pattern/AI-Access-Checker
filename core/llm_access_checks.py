@@ -31,6 +31,7 @@ import json
 import time
 import random
 import requests
+from functools import lru_cache
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 from protego import Protego
@@ -363,6 +364,7 @@ def compute_overall(pillar_scores: dict, robots_missing: bool = False) -> dict:
 # HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@lru_cache(maxsize=128)
 def fetch(url, timeout=15, user_agent=None):
     headers = {"User-Agent": user_agent or BROWSER_UA}
     try:
