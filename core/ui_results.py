@@ -497,13 +497,15 @@ def render_results(audit: dict, get_secret_fn) -> None:
                     gap_color = BRAND["danger"] if pct < 30 else BRAND["warning"] if pct < 70 else BRAND["teal"]
                     st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:10px;padding:14px 18px;margin:12px 0;"><div style="font-size:11px;color:{BRAND["text_secondary"]};text-transform:uppercase;letter-spacing:1px;">Content Visibility</div><div style="font-size:20px;font-weight:700;color:{gap_color};">{pct}% <span style="font-size:14px;opacity:0.5;">of content visible to AI</span></div><div style="font-size:12px;color:{BRAND["text_secondary"]};">HTML: {html_text:,} chars · JS-rendered: {js_text:,} chars · Hidden: {js_text - html_text:,} chars</div></div>', unsafe_allow_html=True)
 
-                # AI Analysis
-                try:
-                    ai_analysis = ai_analyse_js_gap(test_url, comp, label, get_secret_fn)
-                except Exception:
-                    ai_analysis = None
-                if "_audit" in st.session_state:
-                    st.session_state["_audit"].setdefault("_bifrost_js", {})[test_url] = ai_analysis
+                # AI Analysis (Memoized)
+                ai_analysis = audit.get("_bifrost_js", {}).get(test_url)
+                if not ai_analysis:
+                    try:
+                        ai_analysis = ai_analyse_js_gap(test_url, comp, label, get_secret_fn)
+                    except Exception:
+                        ai_analysis = None
+                    if "_audit" in st.session_state:
+                        st.session_state["_audit"].setdefault("_bifrost_js", {})[test_url] = ai_analysis
                 if ai_analysis:
                     st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
                     st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{ai_analysis}</div>', unsafe_allow_html=True)
@@ -588,13 +590,15 @@ def render_results(audit: dict, get_secret_fn) -> None:
         robots_url = robots_result.get("robots", {}).get("url", robots_result.get("url", ""))
         st.markdown(brand_status(f"No robots.txt found at {robots_url}", "danger"), unsafe_allow_html=True)
 
-    # AI Analysis — What This Means
-    try:
-        robots_ai = analyse_robots_access(parsed.netloc, robots_result, get_secret_fn)
-    except Exception:
-        robots_ai = None
-    if "_audit" in st.session_state:
-        st.session_state["_audit"]["_bifrost_robots"] = robots_ai
+    # AI Analysis — What This Means (Memoized)
+    robots_ai = audit.get("_bifrost_robots")
+    if not robots_ai:
+        try:
+            robots_ai = analyse_robots_access(parsed.netloc, robots_result, get_secret_fn)
+        except Exception:
+            robots_ai = None
+        if "_audit" in st.session_state:
+            st.session_state["_audit"]["_bifrost_robots"] = robots_ai
     if robots_ai:
         st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
         st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{robots_ai}</div>', unsafe_allow_html=True)
@@ -697,13 +701,15 @@ def render_results(audit: dict, get_secret_fn) -> None:
             if not schemas:
                 st.markdown(brand_status("No Schema.org structured data found on this page", "warning"), unsafe_allow_html=True)
 
-            # AI Analysis — What This Means
-            try:
-                schema_ai = analyse_schema_quality(test_url, schemas, get_secret_fn)
-            except Exception:
-                schema_ai = None
-            if "_audit" in st.session_state:
-                st.session_state["_audit"].setdefault("_bifrost_schema", {})[test_url] = schema_ai
+            # AI Analysis — What This Means (Memoized)
+            schema_ai = audit.get("_bifrost_schema", {}).get(test_url)
+            if not schema_ai:
+                try:
+                    schema_ai = analyse_schema_quality(test_url, schemas, get_secret_fn)
+                except Exception:
+                    schema_ai = None
+                if "_audit" in st.session_state:
+                    st.session_state["_audit"].setdefault("_bifrost_schema", {})[test_url] = schema_ai
             if schema_ai:
                 st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
                 st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{schema_ai}</div>', unsafe_allow_html=True)
@@ -769,13 +775,15 @@ def render_results(audit: dict, get_secret_fn) -> None:
                 s = "success" if pts > 0 else "info"
                 st.markdown(brand_status(f"+{pts} pts — {lbl}", s), unsafe_allow_html=True)
 
-    # AI Analysis — What This Means
-    try:
-        llm_ai = analyse_llm_discoverability(parsed.netloc, llm_result, get_secret_fn)
-    except Exception:
-        llm_ai = None
-    if "_audit" in st.session_state:
-        st.session_state["_audit"]["_bifrost_llm"] = llm_ai
+    # AI Analysis — What This Means (Memoized)
+    llm_ai = audit.get("_bifrost_llm")
+    if not llm_ai:
+        try:
+            llm_ai = analyse_llm_discoverability(parsed.netloc, llm_result, get_secret_fn)
+        except Exception:
+            llm_ai = None
+        if "_audit" in st.session_state:
+            st.session_state["_audit"]["_bifrost_llm"] = llm_ai
     if llm_ai:
         st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
         st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{llm_ai}</div>', unsafe_allow_html=True)
@@ -854,13 +862,15 @@ def render_results(audit: dict, get_secret_fn) -> None:
                     ratio = text_len / html_len * 100
                     st.markdown(brand_status(f"Text-to-HTML ratio: {ratio:.1f}%", "success" if ratio >= 15 else "warning"), unsafe_allow_html=True)
 
-            # AI Analysis — What This Means
-            try:
-                sem_ai = analyse_semantic_hierarchy(test_url, sem_r, label, get_secret_fn)
-            except Exception:
-                sem_ai = None
-            if "_audit" in st.session_state:
-                st.session_state["_audit"].setdefault("_bifrost_sem", {})[test_url] = sem_ai
+            # AI Analysis — What This Means (Memoized)
+            sem_ai = audit.get("_bifrost_sem", {}).get(test_url)
+            if not sem_ai:
+                try:
+                    sem_ai = analyse_semantic_hierarchy(test_url, sem_r, label, get_secret_fn)
+                except Exception:
+                    sem_ai = None
+                if "_audit" in st.session_state:
+                    st.session_state["_audit"].setdefault("_bifrost_sem", {})[test_url] = sem_ai
             if sem_ai:
                 st.markdown(f'<div style="font-weight:700;color:{BRAND["white"]};font-size:15px;margin:16px 0 8px 0;">AI Analysis — What This Means:</div>', unsafe_allow_html=True)
                 st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{sem_ai}</div>', unsafe_allow_html=True)
@@ -995,12 +1005,14 @@ def render_results(audit: dict, get_secret_fn) -> None:
                 },
             }
 
-            try:
-                brain_analysis = pattern_brain_analysis(parsed.netloc, all_results_for_brain, get_secret_fn)
-            except Exception:
-                brain_analysis = None
-            if "_audit" in st.session_state:
-                st.session_state["_audit"]["pattern_brain"] = brain_analysis
+            brain_analysis = audit.get("pattern_brain")
+            if not brain_analysis:
+                try:
+                    brain_analysis = pattern_brain_analysis(parsed.netloc, all_results_for_brain, get_secret_fn)
+                except Exception:
+                    brain_analysis = None
+                if "_audit" in st.session_state:
+                    st.session_state["_audit"]["pattern_brain"] = brain_analysis
 
             # Persist Pattern Brain back to Supabase so PDF downloads from history include it
             _loaded_id = st.session_state.get("_loaded_audit_id")

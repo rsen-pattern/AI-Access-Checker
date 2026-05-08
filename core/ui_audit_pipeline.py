@@ -104,6 +104,7 @@ def execute_audit_pipeline(
           st.session_state["_bulk_rerun_queue"] and "_bulk_rerun_progress"
         - Renders st.progress() bar and the time-estimate card
     """
+    fetch.cache_clear()
     st.session_state.pop("_audit", None)
     st.session_state.pop("_loaded_audit_id", None)
     st.session_state.pop("_loaded_from_history", None)
