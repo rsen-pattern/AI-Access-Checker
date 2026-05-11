@@ -96,12 +96,17 @@ TOPLINE_UNLOCKS_BLOCKS = [
     ),
 ]
 
-TOPLINE_CTA_TEMPLATE = (
-    "Your audit identified {n_findings} findings across {weakest_pillar} and {n_other} other areas. "
-    "In the walkthrough we'll go through each one, the prioritised fix order, and how your scores "
-    "compare to others in your category. The full report includes pillar-by-pillar detail, "
-    "page-level breakdowns, and the AI analysis behind every finding."
+TOPLINE_CTA_PRIMARY = (
+    "Reply to your Pattern contact",
+    "Hit reply on the email this PDF came with — share two or three times that work "
+    "and we'll lock in a 45-minute walkthrough.",
 )
+
+TOPLINE_CTA_FALLBACK = (
+    "Didn't come via email? Visit {url} and mention your LLM Readiness audit."
+)
+
+TOPLINE_CTA_FALLBACK_URL = "https://au.pattern.com/contact"
 
 # ─── BRAND ────────────────────────────────────────────────────────────────────
 # Single source of truth — must match BRAND dict in ai_access_checker.py
@@ -606,12 +611,13 @@ def _cover_page_flowables(domain: str, overall: int, grade_letter: str,
 
 # ─── TOPLINE HELPERS ──────────────────────────────────────────────────────────
 
-def _build_headline_findings(audit: dict) -> list[tuple[str, str]]:
-    """Rules-based generator. Returns up to 5 (headline, cost) tuples,
-    in priority order. Symptom-only — never names the fix."""
-    robots_result  = audit.get("robots_result",  {}) or {}
-    schema_results = audit.get("schema_results", {}) or {}
-    llm_result     = audit.get("llm_result",     {}) or {}
+def _build_headline_findings(audit: dict) -> list[tuple[str, str, str]]:
+    """Rules-based generator. Returns up to 5 (headline, cost, severity) tuples,
+    in priority order. Symptom-only — never names the fix.
+    Severity values: 'critical', 'warning', 'info'."""
+    robots_result   = audit.get("robots_result",   {}) or {}
+    schema_results  = audit.get("schema_results",  {}) or {}
+    llm_result      = audit.get("llm_result",      {}) or {}
     security_result = audit.get("security_result", {}) or {}
 
     js_score     = int(audit.get("js_score",     0) or 0)
@@ -629,7 +635,7 @@ def _build_headline_findings(audit: dict) -> list[tuple[str, str]]:
     weakest_score  = pillar_scores[weakest_pillar]
 
     cf = robots_result.get("cloudflare", {}) or {}
-    findings: list[tuple[str, str]] = []
+    findings: list[tuple[str, str, str]] = []
 
     # 1. Cloudflare blocking AI bots
     if cf.get("bot_fight_mode_likely"):
@@ -638,6 +644,7 @@ def _build_headline_findings(audit: dict) -> list[tuple[str, str]]:
             "GPTBot and ClaudeBot are returning 403s on key pages. This is invisible in your "
             "analytics but means your brand isn't being indexed by training datasets or "
             "real-time AI search.",
+            "info",
         ))
 
     # 2. No robots.txt
@@ -646,6 +653,7 @@ def _build_headline_findings(audit: dict) -> list[tuple[str, str]]:
             "Your site has no instructions for AI crawlers.",
             "Without crawl instructions, AI systems have no explicit guidance on which pages to "
             "index — leading to inconsistent crawl patterns and missed content.",
+            "info",
         ))
 
     # 3. Severe JS rendering gap
@@ -655,6 +663,7 @@ def _build_headline_findings(audit: dict) -> list[tuple[str, str]]:
             "A large portion of your page content only appears after JavaScript executes. "
             "AI crawlers receive a stripped-down page — missing product descriptions, pricing, "
             "and the copy that should drive citations.",
+            "critical" if js_score < 35 else "info",
         ))
 
     # 4. Zero schema
@@ -664,6 +673,7 @@ def _build_headline_findings(audit: dict) -> list[tuple[str, str]]:
             "Without machine-readable metadata, AI systems can't reliably surface your product "
             "details, pricing, or brand in shopping queries. It's the difference between being "
             "found and being invisible.",
+            "critical",  # schema_score < 25 is always below the 35% threshold
         ))
 
     # 5. No GTIN/MPN on product pages
@@ -680,6 +690,7 @@ def _build_headline_findings(audit: dict) -> list[tuple[str, str]]:
                 "Your product pages are missing the universal identifiers AI purchasing agents "
                 "use to match products across catalogues. Without them, your products won't "
                 "appear when an AI agent is asked to compare or recommend items in your category.",
+                "info",
             ))
 
     # 6. No llm.txt and no AI Info Page
@@ -694,6 +705,7 @@ def _build_headline_findings(audit: dict) -> list[tuple[str, str]]:
                 "When AI systems assemble their understanding of your brand, they use whatever "
                 "public content they can find. Without a designated guidance page, that narrative "
                 "is shaped by third parties — review sites, aggregators, competitors.",
+                "info",
             ))
 
     # 7. No Organisation sameAs
@@ -709,16 +721,17 @@ def _build_headline_findings(audit: dict) -> list[tuple[str, str]]:
                 "Your organisation's structured data doesn't include links to your verified "
                 "profiles on social platforms or authoritative directories. Without these, AI "
                 "knowledge graphs treat you as an unverified entity — reducing citation confidence.",
+                "info",
             ))
 
-    # 8. Critical security exposure
+    # 8. Critical security exposure — withheld detail tease
     if len(findings) < 5:
         critical_security = (security_result.get("findings", {}) or {}).get("critical", [])
         if critical_security:
             findings.append((
                 "A sensitive exposure was identified that warrants a private conversation.",
-                "One or more findings in this area are significant enough that we'd prefer to "
-                "walk you through them directly rather than detail them in this summary.",
+                "We've withheld the specifics — they're better discussed live.",
+                "warning",
             ))
 
     # 9. Generic fallback — weakest pillar critically low
@@ -728,6 +741,7 @@ def _build_headline_findings(audit: dict) -> list[tuple[str, str]]:
             f"At {weakest_score}%, this pillar is dragging your overall readiness score. "
             "AI systems rely on multiple signals working together — a gap this large in one "
             "area limits the impact of improvements elsewhere.",
+            "critical" if weakest_score < 35 else "info",
         ))
 
     return findings[:5]
@@ -1496,7 +1510,8 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
         title=f"Pattern LLM Readiness — Topline Summary — {domain}",
     )
     story: list = []
-    timestamp = time.strftime("%Y-%m-%d %H:%M UTC")
+    _t = time.localtime()
+    timestamp = f"{_t.tm_mday} {time.strftime('%B %Y', _t)}"
 
     # ── PAGE 1: COVER ─────────────────────────────────────────────────────────
     logo = _pattern_logo(width_pt=180.0)
@@ -1540,23 +1555,34 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
     story.append(Paragraph("Where AI visibility is leaking", _S_H2()))
     story.append(_sp(6))
 
-    # Pillar scores table
-    pillar_rows = [["Pillar", "Score Bar", "%", "Grade"]]
+    # Pillar scores table — slate header (not purple), no Grade column
+    pillar_rows = [["Pillar", "Performance", "%"]]
     for pname, psc in pillar_scores.items():
-        gl, _ = _grade(psc)
         sc_color = _score_color(psc)
         pillar_rows.append([
             Paragraph(pname, _style(f"tl_pn_{pname}", fontSize=9, textColor=C_WHITE,
                                     fontName="Helvetica-Bold")),
-            ScoreBar(psc, width=160, height=5),
+            ScoreBar(psc, width=210, height=5),
             Paragraph(f'<font color="#{sc_color.hexval()[2:]}"><b>{psc}%</b></font>',
                       _style(f"tl_pp_{pname}", fontSize=9, alignment=TA_CENTER)),
-            Paragraph(f'<font color="#{sc_color.hexval()[2:]}"><b>{gl}</b></font>',
-                      _style(f"tl_pg_{pname}", fontSize=10, alignment=TA_CENTER,
-                             fontName="Helvetica-Bold")),
         ])
-    pt = Table(pillar_rows, colWidths=[170, 180, 50, 50])
-    pt.setStyle(_table_header_style())
+    pt = Table(pillar_rows, colWidths=[170, 230, 50])
+    pt.setStyle(TableStyle([
+        ("BACKGROUND",     (0, 0), (-1, 0),  C_SURFACE),
+        ("TEXTCOLOR",      (0, 0), (-1, 0),  white),
+        ("FONTNAME",       (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTSIZE",       (0, 0), (-1, 0),  8),
+        ("ALIGN",          (0, 0), (-1, 0),  "LEFT"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_BG, C_CARD]),
+        ("GRID",           (0, 0), (-1, -1), 0.4, C_BORDER),
+        ("LEFTPADDING",    (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING",   (0, 0), (-1, -1), 8),
+        ("TOPPADDING",     (0, 0), (-1, 0),  6),
+        ("BOTTOMPADDING",  (0, 0), (-1, 0),  6),
+        ("TOPPADDING",     (0, 1), (-1, -1), 8),
+        ("BOTTOMPADDING",  (0, 1), (-1, -1), 8),
+        ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
+    ]))
     story.append(pt)
     story.append(_sp(16))
 
@@ -1587,6 +1613,22 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
         ("VALIGN",        (0, 0), (-1, -1), "TOP"),
     ]))
     story.append(sw_table)
+
+    # Dynamic sentence summarising health spread
+    _healthy_count = sum(1 for s in pillar_scores.values() if s >= 70)
+    if _healthy_count > 0:
+        _health_word = "pillar is" if _healthy_count == 1 else "pillars are"
+        _summary_sentence = (
+            f"{_healthy_count} {_health_word} healthy. "
+            f"{weakest[0]} needs immediate attention."
+        )
+    else:
+        _summary_sentence = f"All pillars need attention. {weakest[0]} is the priority."
+    story.append(_sp(8))
+    story.append(Paragraph(
+        _summary_sentence,
+        _style("tl_health_summary", fontSize=8, textColor=C_MUTED,
+               fontName="Helvetica", leading=12)))
     story.append(PageBreak())
 
     # ── PAGE 3: WHAT'S BEHIND THE SCORE ──────────────────────────────────────
@@ -1594,7 +1636,9 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
     story.append(Paragraph("What's behind the score", _S_H2()))
     story.append(_sp(10))
 
-    for i, (headline, cost) in enumerate(headline_findings, start=1):
+    _severity_colors = {"critical": C_DANGER, "warning": C_WARN, "info": C_PRIMARY}
+    for i, (headline, cost, severity) in enumerate(headline_findings, start=1):
+        accent = _severity_colors.get(severity, C_PRIMARY)
         card_content = Paragraph(
             f'<font color="#{C_MUTED.hexval()[2:]}" size="8"><b>{i}</b></font>  '
             f'<font color="#{C_WHITE.hexval()[2:]}"><b>{headline}</b></font><br/>'
@@ -1603,7 +1647,7 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
         card = Table([[card_content]], colWidths=[450])
         card.setStyle(TableStyle([
             ("BACKGROUND",    (0, 0), (-1, -1), C_CARD),
-            ("LINEBEFORE",    (0, 0), (-1, -1), 3, C_PRIMARY),
+            ("LINEBEFORE",    (0, 0), (-1, -1), 3, accent),
             ("LEFTPADDING",   (0, 0), (-1, -1), 14),
             ("RIGHTPADDING",  (0, 0), (-1, -1), 14),
             ("TOPPADDING",    (0, 0), (-1, -1), 12),
@@ -1643,38 +1687,50 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
     story.append(Paragraph("Book a 45-min walkthrough", _S_H2()))
     story.append(_sp(10))
 
-    cta_para = TOPLINE_CTA_TEMPLATE.format(
-        n_findings=n_findings,
-        weakest_pillar=weakest[0],
-        n_other=n_other,
+    # Lead-in paragraph — bridges into the reply CTA
+    lead_in = (
+        f"Your audit identified {n_findings} findings — including {n_other + 1} in "
+        f"{weakest[0]} that we'd want to talk through carefully. "
+        f"A 45-minute walkthrough is the fastest way to get the priorities, the fixes, "
+        f"and the comparisons against others in your category."
     )
-    story.append(Paragraph(cta_para, _style("tl_cta_body", fontSize=10, textColor=C_WHITE,
-                                             fontName="Helvetica", leading=16, spaceAfter=8)))
-    story.append(_sp(20))
+    story.append(Paragraph(lead_in, _style("tl_cta_body", fontSize=10, textColor=C_WHITE,
+                                            fontName="Helvetica", leading=16, spaceAfter=8)))
+    story.append(_sp(16))
 
-    cta_link_text = (
-        f'<font color="#{C_PRIMARY.hexval()[2:]}"><b>'
-        f'<a href="{PATTERN_WEBSITE}">au.pattern.com</a>'
-        f'</b></font>'
-    )
-    cta_card_content = Paragraph(
-        f'<font color="#{C_MUTED.hexval()[2:]}" size="8"><b>BOOK YOUR WALKTHROUGH</b></font><br/><br/>'
-        + cta_link_text,
-        _style("tl_cta_card", fontSize=12, alignment=TA_CENTER, leading=18))
-    cta_card = Table([[cta_card_content]], colWidths=[450])
-    cta_card.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, -1), C_CARD),
-        ("LINEBEFORE",    (0, 0), (-1, -1), 3, C_PRIMARY),
-        ("LINEAFTER",     (0, 0), (-1, -1), 3, C_PRIMARY),
-        ("LINETOP",       (0, 0), (-1, -1), 3, C_PRIMARY),
-        ("LINEBELOW",     (0, 0), (-1, -1), 3, C_PRIMARY),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 24),
-        ("RIGHTPADDING",  (0, 0), (-1, -1), 24),
-        ("TOPPADDING",    (0, 0), (-1, -1), 20),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 20),
-        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+    # Primary CTA panel — reply prompt
+    _cta_kicker, _cta_body = TOPLINE_CTA_PRIMARY
+    primary_panel_content = Paragraph(
+        f'<font color="#{C_WHITE.hexval()[2:]}"><b>{_cta_kicker}</b></font><br/>'
+        f'<font color="#{C_MUTED.hexval()[2:]}" size="9">{_cta_body}</font>',
+        _style("tl_cta_primary", fontSize=12, leading=18))
+    primary_panel = Table([[primary_panel_content]], colWidths=[450])
+    primary_panel.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), C_SURFACE),
+        ("LINEBEFORE",    (0, 0), (-1, -1), 4, C_PRIMARY),
+        ("LINETOP",       (0, 0), (-1, -1), 1, C_BORDER),
+        ("LINEBELOW",     (0, 0), (-1, -1), 1, C_BORDER),
+        ("LINEAFTER",     (0, 0), (-1, -1), 1, C_BORDER),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 20),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 20),
+        ("TOPPADDING",    (0, 0), (-1, -1), 18),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 18),
     ]))
-    story.append(cta_card)
+    story.append(primary_panel)
+    story.append(_sp(14))
+
+    # Secondary fallback — muted, no panel treatment
+    _fallback_url = TOPLINE_CTA_FALLBACK_URL
+    _fallback_link = (
+        f'<a href="{_fallback_url}">'
+        f'<font color="#{C_PRIMARY.hexval()[2:]}">{_fallback_url.replace("https://", "")}</font>'
+        f'</a>'
+    )
+    _fallback_text = TOPLINE_CTA_FALLBACK.format(url=_fallback_link)
+    story.append(Paragraph(
+        _fallback_text,
+        _style("tl_cta_fallback", fontSize=8, textColor=C_MUTED,
+               fontName="Helvetica", leading=12)))
 
     # ── Page background + page numbers ────────────────────────────────────────
     def _on_page_topline(canvas, doc_):
