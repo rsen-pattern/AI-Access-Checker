@@ -77,24 +77,40 @@ TOPLINE_COVER_SUBTITLE = (
 )
 
 TOPLINE_UNLOCKS_BLOCKS = [
-    (
-        "Be cited when customers research your category",
-        "Perplexity, ChatGPT, and Google AI Overviews now answer purchase-intent queries directly. "
-        "Brands that aren't indexed by AI crawlers are invisible in that answer — ceding the research "
-        "moment to competitors who are.",
-    ),
-    (
-        "Surface in AI shopping agents",
-        "A new layer of AI-powered comparison tools is being built on top of structured product data. "
-        "Brands with clean, machine-readable product information are included automatically; those "
-        "without are skipped entirely.",
-    ),
-    (
-        "Own your brand entity before competitors do",
-        "AI knowledge graphs are being assembled now, using publicly available structured data. "
-        "Establishing your organisation's entity — with verified links across the web — sets the "
-        "foundation for how AI describes your brand for years.",
-    ),
+    {
+        "heading": "Be cited when customers research your category",
+        # Citation needs both a discoverable AI guidance surface AND clean
+        # entity data so the AI knows what to cite about your brand.
+        "powered_by_pillars": ["ai_discoverability", "schema_entity"],
+        "body": (
+            "Perplexity, ChatGPT, and Google AI Overviews now answer purchase-intent "
+            "queries directly. Brands not indexed by AI crawlers are invisible in that "
+            "answer — the gap shows up as a missed mention every time a customer searches."
+        ),
+    },
+    {
+        "heading": "Surface in AI shopping agents",
+        # Shopping agents need structured product data — AND the product detail
+        # has to be in the raw HTML, not loaded later via JavaScript, because
+        # most AI crawlers don't execute scripts.
+        "powered_by_pillars": ["schema_entity", "js_rendering"],
+        "body": (
+            "A new layer of AI-powered comparison tools is being built on top of structured "
+            "product data. Brands with clean, machine-readable product information are "
+            "included automatically; those without are skipped entirely."
+        ),
+    },
+    {
+        "heading": "Own your brand entity before competitors do",
+        # Entity assembly needs structured data — AND crawlers need to reach
+        # the pages that publish it.
+        "powered_by_pillars": ["schema_entity", "robots_crawl"],
+        "body": (
+            "AI knowledge graphs are being assembled now, using publicly available "
+            "structured data. Establishing your organisation's entity sets the foundation "
+            "for how AI describes your brand for years."
+        ),
+    },
 ]
 
 TOPLINE_CTA_PRIMARY = (
@@ -108,6 +124,77 @@ TOPLINE_CTA_FALLBACK = (
 )
 
 TOPLINE_CTA_FALLBACK_URL = "https://au.pattern.com/contact"
+
+# ─── TOPLINE PILLAR REGISTRY ──────────────────────────────────────────────────
+# Topline-only pillar slugs. Maps a canonical key to (display_name, audit-dict
+# score key). Single source of truth for page 2 grouping, page 3 finding labels,
+# and page 4 "Powered by" lookups.
+#
+# Display names match the rest of the codebase ("JS Rendering", "Robots & Crawl")
+# rather than the longer form in the methodology doc. Drift between the two
+# would be confusing — flag in the PR if the doc changes.
+TOPLINE_PILLAR_REGISTRY = {
+    "js_rendering":       {"display": "JS Rendering",       "score_key": "js_score"},
+    "robots_crawl":       {"display": "Robots & Crawl",     "score_key": "robots_score"},
+    "schema_entity":      {"display": "Schema & Entity",    "score_key": "schema_score"},
+    "ai_discoverability": {"display": "AI Discoverability", "score_key": "llm_score"},
+    "semantic_hierarchy": {"display": "Semantic Hierarchy", "score_key": "semantic_score"},
+    "security":           {"display": "Security",           "score_key": "security_score"},
+}
+
+# Which pillars contribute to the weighted overall vs scored separately.
+# Weights (in core.llm_access_checks.compute_overall):
+#   JS Rendering 25% · Robots & Crawl 25% · Schema & Entity 35% · AI Discoverability 15%
+# Semantic Hierarchy and Security are tracked but not blended in.
+TOPLINE_PILLAR_GROUPS = {
+    "weighted":   ["js_rendering", "robots_crawl", "schema_entity", "ai_discoverability"],
+    "additional": ["semantic_hierarchy", "security"],
+}
+
+# Pillar weights — used only for the footnote string under the page 2 table.
+TOPLINE_PILLAR_WEIGHTS_NOTE = (
+    "Overall score is a weighted average: Schema & Entity 35%, JS Rendering 25%, "
+    "Robots & Crawl 25%, AI Discoverability 15%. Semantic Hierarchy and Security "
+    "are scored separately."
+)
+
+# One-line plain-English description per pillar. Renders inside each page 2
+# row in muted-grey small text, below the pillar name. No jargon, no fix names.
+TOPLINE_PILLAR_DESCRIPTIONS = {
+    "js_rendering":       "Whether AI crawlers can read your pages without running JavaScript",
+    "robots_crawl":       "Whether AI bots are allowed to reach and index your content",
+    "schema_entity":      "Whether your structured data tells AI what you sell and who you are",
+    "ai_discoverability": "Whether AI agents can find dedicated information about how to use your site",
+    "semantic_hierarchy": "Whether your page structure makes sense to AI parsers",
+    "security":           "Whether your site exposes anything that AI crawlers shouldn't see",
+}
+
+
+def _topline_pillar_score(audit: dict, pillar_key: str) -> int:
+    """Look up the integer score for a topline pillar key from the audit dict.
+
+    Raises KeyError if the slug isn't in TOPLINE_PILLAR_REGISTRY. Fail loudly —
+    drift between the registry and the audit shape should surface immediately,
+    not be papered over with a silent zero.
+    """
+    if pillar_key not in TOPLINE_PILLAR_REGISTRY:
+        raise KeyError(
+            f"Unknown topline pillar key {pillar_key!r}. "
+            f"Add it to TOPLINE_PILLAR_REGISTRY or fix the caller."
+        )
+    score_key = TOPLINE_PILLAR_REGISTRY[pillar_key]["score_key"]
+    return int(audit.get(score_key, 0) or 0)
+
+
+def _topline_pillar_display(pillar_key: str) -> str:
+    """Look up the human-facing display name for a topline pillar key."""
+    if pillar_key not in TOPLINE_PILLAR_REGISTRY:
+        raise KeyError(
+            f"Unknown topline pillar key {pillar_key!r}. "
+            f"Add it to TOPLINE_PILLAR_REGISTRY or fix the caller."
+        )
+    return TOPLINE_PILLAR_REGISTRY[pillar_key]["display"]
+
 
 # ─── BRAND ────────────────────────────────────────────────────────────────────
 # Single source of truth — must match BRAND dict in ai_access_checker.py
@@ -622,70 +709,169 @@ def _cover_page_flowables(domain: str, overall: int, grade_letter: str,
 
 # ─── TOPLINE HELPERS ──────────────────────────────────────────────────────────
 
-def _build_headline_findings(audit: dict) -> list[tuple[str, str, str]]:
-    """Rules-based generator. Returns up to 5 (headline, cost, severity) tuples,
-    in priority order. Symptom-only — never names the fix.
-    Severity values: 'critical', 'warning', 'info'."""
+def _topline_pillar_rows(
+    audit: dict,
+    pillar_keys: list[str],
+    header_label: str | None = "Pillar",
+    subordinate: bool = False,
+) -> list:
+    """Build the page 2 pillar table rows.
+
+    pillar_keys: list of TOPLINE_PILLAR_REGISTRY slugs in render order.
+    header_label: column header text. If None, the table renders without a
+        header row — useful for the "Additional checks" section which has its
+        own kicker label above it.
+    subordinate: when True, the table uses a slightly more muted treatment so
+        readers eye it as secondary to the section above.
+
+    Returns a list of flowables (the table — wrapped in a list for easy
+    concatenation into the story array).
+    """
+    rows: list = []
+    if header_label is not None:
+        rows.append([header_label, "Performance", "%"])
+
+    for key in pillar_keys:
+        pname = _topline_pillar_display(key)
+        psc   = _topline_pillar_score(audit, key)
+        desc  = TOPLINE_PILLAR_DESCRIPTIONS.get(key, "")
+        sc_color = _score_color(psc)
+        # Two-line cell: pillar name (bold white) + one-line description (muted).
+        name_cell = Paragraph(
+            f'<font color="#{C_WHITE.hexval()[2:]}"><b>{pname}</b></font>'
+            f'<br/><font color="#{C_MUTED.hexval()[2:]}" size="7">{desc}</font>',
+            _style(f"tl_pn_{key}", fontSize=9, leading=12, spaceAfter=0),
+        )
+        rows.append([
+            name_cell,
+            ScoreBar(psc, width=210, height=5),
+            Paragraph(f'<font color="#{sc_color.hexval()[2:]}"><b>{psc}%</b></font>',
+                      _style(f"tl_pp_{key}", fontSize=9, alignment=TA_CENTER)),
+        ])
+
+    tbl = Table(rows, colWidths=[210, 195, 45])
+    style_cmds = [
+        ("ROWBACKGROUNDS", (0, 1 if header_label else 0), (-1, -1), [C_BG, C_CARD]),
+        ("GRID",           (0, 0), (-1, -1), 0.4, C_BORDER),
+        ("LEFTPADDING",    (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING",   (0, 0), (-1, -1), 8),
+        ("TOPPADDING",     (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING",  (0, 0), (-1, -1), 8),
+        ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
+    ]
+    if header_label is not None:
+        style_cmds.extend([
+            ("BACKGROUND",    (0, 0), (-1, 0), C_SURFACE),
+            ("TEXTCOLOR",     (0, 0), (-1, 0), white),
+            ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE",      (0, 0), (-1, 0), 8),
+            ("ALIGN",         (0, 0), (-1, 0), "LEFT"),
+            ("TOPPADDING",    (0, 0), (-1, 0), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+        ])
+    if subordinate:
+        # Slightly slimmer rows to communicate "these are real but secondary".
+        style_cmds.extend([
+            ("TOPPADDING",    (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ])
+
+    tbl.setStyle(TableStyle(style_cmds))
+    return [tbl]
+
+
+def _build_headline_findings(audit: dict) -> list[dict]:
+    """Rules-based generator. Returns up to 5 finding dicts in priority order.
+
+    Each finding has:
+        headline        — bold one-line heading
+        what_we_found   — symptom in plain English, ~1 sentence, no fix names
+        why_it_matters  — business consequence, ~1 sentence
+        severity        — 'critical' | 'warning' | 'info'
+
+    Severity rules (per methodology):
+        - 'critical': a real critical-category exposure OR a weighted pillar
+          score in the F band (< 35).
+        - 'warning':  the "private conversation" tease, or a weighted pillar
+          score in the D band (35–49).
+        - 'info':     everything else.
+
+    The "private conversation" finding is gated on actual sensitive signals
+    (critical security paths reachable, or sensitive content in raw HTML) —
+    NOT just a low Security score.
+    """
     robots_result   = audit.get("robots_result",   {}) or {}
     schema_results  = audit.get("schema_results",  {}) or {}
     llm_result      = audit.get("llm_result",      {}) or {}
     security_result = audit.get("security_result", {}) or {}
 
-    js_score     = int(audit.get("js_score",     0) or 0)
-    schema_score = int(audit.get("schema_score", 0) or 0)
+    js_score       = int(audit.get("js_score",       0) or 0)
+    schema_score   = int(audit.get("schema_score",   0) or 0)
+    security_score = int(audit.get("security_score", 0) or 0)
 
-    pillar_scores = {
-        "JS Rendering":       int(audit.get("js_score",       0) or 0),
-        "Robots & Crawl":     int(audit.get("robots_score",   0) or 0),
-        "Schema & Entity":    int(audit.get("schema_score",   0) or 0),
-        "AI Discoverability": int(audit.get("llm_score",      0) or 0),
-        "Semantic Hierarchy": int(audit.get("semantic_score", 0) or 0),
-        "Security":           int(audit.get("security_score", 0) or 0),
+    # Weighted-only pillar set for "generic fallback" pillar-score finding.
+    # Security must not appear here — it's not in the overall, so it can't
+    # "drag your readiness score".
+    weighted_pillar_scores = {
+        _topline_pillar_display(k): _topline_pillar_score(audit, k)
+        for k in TOPLINE_PILLAR_GROUPS["weighted"]
     }
-    weakest_pillar = min(pillar_scores, key=pillar_scores.get)
-    weakest_score  = pillar_scores[weakest_pillar]
+    weakest_pillar = min(weighted_pillar_scores, key=weighted_pillar_scores.get)
+    weakest_score  = weighted_pillar_scores[weakest_pillar]
 
     cf = robots_result.get("cloudflare", {}) or {}
-    findings: list[tuple[str, str, str]] = []
+    findings: list[dict] = []
+
+    def _add(headline: str, what_we_found: str, why_it_matters: str, severity: str = "info") -> None:
+        findings.append({
+            "headline":       headline,
+            "what_we_found":  what_we_found,
+            "why_it_matters": why_it_matters,
+            "severity":       severity,
+        })
 
     # 1. Cloudflare blocking AI bots
     if cf.get("bot_fight_mode_likely"):
-        findings.append((
+        _add(
             "AI crawlers are being blocked before they reach your content.",
-            "GPTBot and ClaudeBot are returning 403s on key pages. This is invisible in your "
-            "analytics but means your brand isn't being indexed by training datasets or "
-            "real-time AI search.",
-            "info",
-        ))
+            "Major AI bots are returning errors when they try to load your pages — and the "
+            "block is happening at the edge, before your site even gets the request.",
+            "Your content isn't being indexed by training datasets or real-time AI search, "
+            "and the failure is invisible in your analytics — so the gap keeps compounding.",
+            severity="info",
+        )
 
     # 2. No robots.txt
     if not robots_result.get("found"):
-        findings.append((
+        _add(
             "Your site has no instructions for AI crawlers.",
-            "Without crawl instructions, AI systems have no explicit guidance on which pages to "
-            "index — leading to inconsistent crawl patterns and missed content.",
-            "info",
-        ))
+            "There's no published guidance file telling AI bots which pages they may index "
+            "or which to skip.",
+            "AI systems fall back to inconsistent default behaviour — some pages get crawled, "
+            "some get missed, and the brand picture they assemble is incomplete.",
+            severity="info",
+        )
 
     # 3. Severe JS rendering gap
     if js_score < 50:
-        findings.append((
+        _add(
             "AI sees a near-empty version of your site.",
-            "A large portion of your page content only appears after JavaScript executes. "
-            "AI crawlers receive a stripped-down page — missing product descriptions, pricing, "
-            "and the copy that should drive citations.",
-            "critical" if js_score < 35 else "info",
-        ))
+            "A large portion of your page content only appears after the browser runs scripts — "
+            "the version AI crawlers receive is missing product descriptions, pricing, and key copy.",
+            "AI shopping agents and answer engines can't cite what they can't read, so your "
+            "products and brand get skipped in favour of competitors whose content is visible.",
+            severity="critical" if js_score < 35 else "info",
+        )
 
     # 4. Zero schema
     if schema_score < 25:
-        findings.append((
+        _add(
             "AI has no structured data to understand your products.",
-            "Without machine-readable metadata, AI systems can't reliably surface your product "
-            "details, pricing, or brand in shopping queries. It's the difference between being "
-            "found and being invisible.",
-            "critical",  # schema_score < 25 is always below the 35% threshold
-        ))
+            "Your pages don't expose the machine-readable metadata AI uses to identify what you sell.",
+            "Without that signal, AI systems can't reliably surface your products, prices, or "
+            "brand in shopping queries — it's the difference between being found and being invisible.",
+            severity="critical",  # schema_score < 25 is always below the 35% threshold
+        )
 
     # 5. No GTIN/MPN on product pages
     if len(findings) < 5:
@@ -696,13 +882,14 @@ def _build_headline_findings(audit: dict) -> list[tuple[str, str, str]]:
             and not (res.get("ecommerce") or {}).get("has_gtin_or_mpn")
         ]
         if product_pages_missing:
-            findings.append((
+            _add(
                 "AI shopping agents can't identify your products.",
-                "Your product pages are missing the universal identifiers AI purchasing agents "
-                "use to match products across catalogues. Without them, your products won't "
-                "appear when an AI agent is asked to compare or recommend items in your category.",
-                "info",
-            ))
+                "Your product pages don't publish the universal product identifiers AI agents "
+                "use to match items across catalogues.",
+                "When an AI agent is asked to compare or recommend in your category, your "
+                "products fall out of the candidate list — competitors with identifiers stay in.",
+                severity="info",
+            )
 
     # 6. No llm.txt and no AI Info Page
     if len(findings) < 5:
@@ -711,15 +898,16 @@ def _build_headline_findings(audit: dict) -> list[tuple[str, str, str]]:
         has_llm_txt  = any(v.get("found") for v in llm_txt_data.values()) if llm_txt_data else False
         has_ai_info  = ai_info.get("found", False)
         if not has_llm_txt and not has_ai_info:
-            findings.append((
+            _add(
                 "Your brand has no official voice in AI training pipelines.",
-                "When AI systems assemble their understanding of your brand, they use whatever "
-                "public content they can find. Without a designated guidance page, that narrative "
-                "is shaped by third parties — review sites, aggregators, competitors.",
-                "info",
-            ))
+                "There's no dedicated page on your site telling AI agents who you are, what "
+                "you sell, and how to talk about you.",
+                "When AI assembles its understanding of your brand, the narrative gets shaped "
+                "by third parties — review sites, aggregators, competitors — instead of you.",
+                severity="info",
+            )
 
-    # 7. No Organisation sameAs
+    # 7. No Organisation entity / sameAs
     if len(findings) < 5:
         has_org_sameas = any(
             res.get("has_org_sameas")
@@ -727,33 +915,62 @@ def _build_headline_findings(audit: dict) -> list[tuple[str, str, str]]:
             if isinstance(res, dict)
         )
         if not has_org_sameas:
-            findings.append((
+            _add(
                 "AI can't verify who you are across the web.",
-                "Your organisation's structured data doesn't include links to your verified "
-                "profiles on social platforms or authoritative directories. Without these, AI "
-                "knowledge graphs treat you as an unverified entity — reducing citation confidence.",
-                "info",
-            ))
+                "Your site doesn't publish the verified external links AI uses to confirm "
+                "an organisation's identity.",
+                "AI agents treat unverified brands as lower-confidence sources — your name "
+                "gets cited less often, or skipped in favour of competitors AI can confirm.",
+                severity="info",
+            )
 
-    # 8. Critical security exposure — withheld detail tease
+    # 8. Critical security exposure — gated on real signals, not just low score
     if len(findings) < 5:
-        critical_security = (security_result.get("findings", {}) or {}).get("critical", [])
-        if critical_security:
-            findings.append((
+        sec_findings        = (security_result.get("findings", {}) or {})
+        critical_paths      = sec_findings.get("critical", []) or []
+        html_exposure_hits  = sec_findings.get("html_exposure", []) or []
+        if critical_paths or html_exposure_hits:
+            _add(
                 "A sensitive exposure was identified that warrants a private conversation.",
-                "We've withheld the specifics — they're better discussed live.",
-                "warning",
-            ))
+                "Something in your site's exposed surface is sensitive enough that we'd rather "
+                "not put it in writing.",
+                "We'd want to walk you through what we saw before suggesting how to handle it — "
+                "both for your security and to avoid putting the detail in a document that may be forwarded.",
+                severity="critical",
+            )
 
-    # 9. Generic fallback — weakest pillar critically low
+    # 9. Security low but no critical signal — methodology-honest version.
+    # Replaces the old "is dragging your overall readiness score" claim (it isn't —
+    # Security is scored separately). Only emitted when Security < 50 AND no
+    # critical-exposure finding above already covered it.
+    already_covered_security = any(
+        f["headline"].startswith("A sensitive exposure") for f in findings
+    )
+    if (
+        len(findings) < 5
+        and security_score < 50
+        and not already_covered_security
+    ):
+        _add(
+            "Your Security score signals real exposure risk.",
+            "Your site is leaking signals that AI crawlers — and other automated agents — "
+            "are picking up on.",
+            "Exposed surfaces hurt both real-world security and AI trust signals. AI agents "
+            "factor exposure into how reliably they cite a source.",
+            severity="critical" if security_score < 35 else "warning",
+        )
+
+    # 10. Generic fallback — weighted weakest pillar critically low. Note: Security
+    # is excluded by construction (weighted_pillar_scores is weighted-only).
     if len(findings) < 3 and weakest_score < 40:
-        findings.append((
+        _add(
             f"Your {weakest_pillar} score is critically low.",
-            f"At {weakest_score}%, this pillar is dragging your overall readiness score. "
-            "AI systems rely on multiple signals working together — a gap this large in one "
-            "area limits the impact of improvements elsewhere.",
-            "critical" if weakest_score < 35 else "info",
-        ))
+            f"At {weakest_score}%, this pillar is well below where it needs to be for "
+            f"AI systems to work with your content reliably.",
+            "AI relies on multiple signals working together — a gap this large in one area "
+            "caps how much improvement elsewhere can deliver.",
+            severity="critical" if weakest_score < 35 else "warning",
+        )
 
     return findings[:5]
 
@@ -1515,15 +1732,18 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
     grade_color   = _score_color(overall)
 
     pillar_scores = {
-        "JS Rendering":       int(audit.get("js_score",       0) or 0),
-        "Robots & Crawl":     int(audit.get("robots_score",   0) or 0),
-        "Schema & Entity":    int(audit.get("schema_score",   0) or 0),
-        "AI Discoverability": int(audit.get("llm_score",      0) or 0),
-        "Semantic Hierarchy": int(audit.get("semantic_score", 0) or 0),
-        "Security":           int(audit.get("security_score", 0) or 0),
+        _topline_pillar_display(k): _topline_pillar_score(audit, k)
+        for k in TOPLINE_PILLAR_REGISTRY
     }
-    sorted_pillars = sorted(pillar_scores.items(), key=lambda x: x[1])
-    weakest, strongest = sorted_pillars[0], sorted_pillars[-1]
+    # Weighted-only view drives Strongest / Priority Focus + the health summary
+    # sentence. Picking "Security" as Priority Focus would be misleading because
+    # Security is not in the overall — methodology honesty matters here.
+    weighted_scores = {
+        _topline_pillar_display(k): _topline_pillar_score(audit, k)
+        for k in TOPLINE_PILLAR_GROUPS["weighted"]
+    }
+    sorted_weighted = sorted(weighted_scores.items(), key=lambda x: x[1])
+    weakest, strongest = sorted_weighted[0], sorted_weighted[-1]
 
     headline_findings = _build_headline_findings(audit)
     recs = build_recommendations(audit, audit.get("no_blog", False))
@@ -1584,38 +1804,38 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
     story.append(Paragraph("Where AI visibility is leaking", _S_H2()))
     story.append(_sp(6))
 
-    # Pillar scores table — slate header (not purple), no Grade column
-    pillar_rows = [["Pillar", "Performance", "%"]]
-    for pname, psc in pillar_scores.items():
-        sc_color = _score_color(psc)
-        pillar_rows.append([
-            Paragraph(pname, _style(f"tl_pn_{pname}", fontSize=9, textColor=C_WHITE,
-                                    fontName="Helvetica-Bold")),
-            ScoreBar(psc, width=210, height=5),
-            Paragraph(f'<font color="#{sc_color.hexval()[2:]}"><b>{psc}%</b></font>',
-                      _style(f"tl_pp_{pname}", fontSize=9, alignment=TA_CENTER)),
-        ])
-    pt = Table(pillar_rows, colWidths=[170, 230, 50])
-    pt.setStyle(TableStyle([
-        ("BACKGROUND",     (0, 0), (-1, 0),  C_SURFACE),
-        ("TEXTCOLOR",      (0, 0), (-1, 0),  white),
-        ("FONTNAME",       (0, 0), (-1, 0),  "Helvetica-Bold"),
-        ("FONTSIZE",       (0, 0), (-1, 0),  8),
-        ("ALIGN",          (0, 0), (-1, 0),  "LEFT"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_BG, C_CARD]),
-        ("GRID",           (0, 0), (-1, -1), 0.4, C_BORDER),
-        ("LEFTPADDING",    (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING",   (0, 0), (-1, -1), 8),
-        ("TOPPADDING",     (0, 0), (-1, 0),  6),
-        ("BOTTOMPADDING",  (0, 0), (-1, 0),  6),
-        ("TOPPADDING",     (0, 1), (-1, -1), 8),
-        ("BOTTOMPADDING",  (0, 1), (-1, -1), 8),
-        ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
-    ]))
-    story.append(pt)
-    story.append(_sp(16))
+    # Section A — pillars that roll into the weighted overall.
+    story.extend(_topline_pillar_rows(
+        audit,
+        pillar_keys=TOPLINE_PILLAR_GROUPS["weighted"],
+        header_label="Pillar",
+    ))
+    story.append(_sp(14))
 
-    # Strongest / Priority Focus cards
+    # Section B — additional checks. Visually subordinated with a section label
+    # and a kicker that explicitly states they don't roll into the headline.
+    story.append(Paragraph(
+        f'<font color="#{C_MUTED.hexval()[2:]}" size="8"><b>ADDITIONAL CHECKS</b></font>'
+        f' <font color="#{C_MUTED.hexval()[2:]}" size="8">· scored separately</font>',
+        _style("tl_additional_kicker", fontSize=8, leading=11, spaceAfter=4),
+    ))
+    story.extend(_topline_pillar_rows(
+        audit,
+        pillar_keys=TOPLINE_PILLAR_GROUPS["additional"],
+        header_label=None,  # no header row — flows under the kicker label
+        subordinate=True,
+    ))
+    story.append(_sp(6))
+
+    # Methodology footnote — declares the weighting so readers can decode the table.
+    story.append(Paragraph(
+        TOPLINE_PILLAR_WEIGHTS_NOTE,
+        _style("tl_weights_note", fontSize=7, textColor=C_MUTED,
+               fontName="Helvetica-Oblique", leading=10, spaceAfter=10),
+    ))
+    story.append(_sp(8))
+
+    # Strongest / Priority Focus cards — derived from weighted pillars ONLY.
     sw_table = Table([[
         Paragraph(
             f'<font color="#{C_MUTED.hexval()[2:]}" size="7"><b>STRONGEST PILLAR</b></font><br/>'
@@ -1643,16 +1863,27 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
     ]))
     story.append(sw_table)
 
-    # Dynamic sentence summarising health spread
-    _healthy_count = sum(1 for s in pillar_scores.values() if s >= 70)
-    if _healthy_count > 0:
-        _health_word = "pillar is" if _healthy_count == 1 else "pillars are"
+    # Health summary — computed only from weighted pillars. If all 4 weighted
+    # pillars are ≥ 70%, the sentence shifts to point readers at the additional
+    # checks instead of inventing urgency that doesn't exist.
+    _weighted_values = list(weighted_scores.values())
+    _healthy_weighted = sum(1 for s in _weighted_values if s >= 70)
+    _total_weighted   = len(_weighted_values)
+    if _healthy_weighted == _total_weighted:
         _summary_sentence = (
-            f"{_healthy_count} {_health_word} healthy. "
+            "All weighted pillars are healthy. "
+            "See additional checks above for further improvements."
+        )
+    elif _healthy_weighted > 0:
+        _health_word = "pillar is" if _healthy_weighted == 1 else "pillars are"
+        _summary_sentence = (
+            f"{_healthy_weighted} weighted {_health_word} healthy. "
             f"{weakest[0]} needs immediate attention."
         )
     else:
-        _summary_sentence = f"All pillars need attention. {weakest[0]} is the priority."
+        _summary_sentence = (
+            f"All weighted pillars need attention. {weakest[0]} is the priority."
+        )
     story.append(_sp(8))
     story.append(Paragraph(
         _summary_sentence,
@@ -1663,27 +1894,56 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
     # ── PAGE 3: WHAT'S BEHIND THE SCORE ──────────────────────────────────────
     story.append(_sp(12))
     story.append(Paragraph("What's behind the score", _S_H2()))
-    story.append(_sp(10))
+    story.append(_sp(8))
 
     _severity_colors = {"critical": C_DANGER, "warning": C_WARN, "info": C_PRIMARY}
-    for i, (headline, cost, severity) in enumerate(headline_findings, start=1):
+    # Inter-card spacing tightened to keep three restructured cards on one page.
+    for i, finding in enumerate(headline_findings, start=1):
+        # Defensive: accept old tuple shape from any stale caller so the page
+        # still renders if something hasn't been updated.
+        if isinstance(finding, tuple):
+            headline, body, severity = finding
+            what_we_found  = body
+            why_it_matters = ""
+        else:
+            headline       = finding["headline"]
+            what_we_found  = finding.get("what_we_found", "")
+            why_it_matters = finding.get("why_it_matters", "")
+            severity       = finding.get("severity", "info")
         accent = _severity_colors.get(severity, C_PRIMARY)
-        card_content = Paragraph(
+
+        card_html = (
             f'<font color="#{C_MUTED.hexval()[2:]}" size="8"><b>{i}</b></font>  '
-            f'<font color="#{C_WHITE.hexval()[2:]}"><b>{headline}</b></font><br/>'
-            f'<font color="#{C_MUTED.hexval()[2:]}" size="8">{cost}</font>',
-            _style(f"tl_find_{i}", fontSize=9, leading=14, spaceAfter=2))
+            f'<font color="#{C_WHITE.hexval()[2:]}"><b>{headline}</b></font>'
+        )
+        if what_we_found:
+            card_html += (
+                f'<br/><br/>'
+                f'<font color="#{C_WHITE.hexval()[2:]}" size="8"><b>What we found:</b></font>'
+                f' <font color="#{C_MUTED.hexval()[2:]}" size="8">{what_we_found}</font>'
+            )
+        if why_it_matters:
+            card_html += (
+                f'<br/>'
+                f'<font color="#{C_WHITE.hexval()[2:]}" size="8"><b>Why it matters:</b></font>'
+                f' <font color="#{C_MUTED.hexval()[2:]}" size="8">{why_it_matters}</font>'
+            )
+
+        card_content = Paragraph(
+            card_html,
+            _style(f"tl_find_{i}", fontSize=9, leading=13, spaceAfter=2),
+        )
         card = Table([[card_content]], colWidths=[450])
         card.setStyle(TableStyle([
             ("BACKGROUND",    (0, 0), (-1, -1), C_CARD),
             ("LINEBEFORE",    (0, 0), (-1, -1), 3, accent),
             ("LEFTPADDING",   (0, 0), (-1, -1), 14),
             ("RIGHTPADDING",  (0, 0), (-1, -1), 14),
-            ("TOPPADDING",    (0, 0), (-1, -1), 12),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+            ("TOPPADDING",    (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
         ]))
         story.append(card)
-        story.append(_sp(8))
+        story.append(_sp(6))
 
     story.append(PageBreak())
 
@@ -1692,11 +1952,49 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
     story.append(Paragraph("What AI readiness unlocks", _S_H2()))
     story.append(_sp(10))
 
-    for block_title, block_body in TOPLINE_UNLOCKS_BLOCKS:
+    for block in TOPLINE_UNLOCKS_BLOCKS:
+        block_title       = block["heading"]
+        block_body        = block["body"]
+        powered_by_keys   = block["powered_by_pillars"]
+
+        # Build the coloured "Powered by" line. Each pillar's score is coloured
+        # using the existing _score_color() bands so the reader can see at a
+        # glance how well-positioned they are to claim this opportunity.
+        # Fails loudly via _topline_pillar_* if a key drifts.
+        powered_by_parts = []
+        for pkey in powered_by_keys:
+            display = _topline_pillar_display(pkey)
+            score   = _topline_pillar_score(audit, pkey)
+            color   = _score_color(score)
+            powered_by_parts.append({
+                "display": display,
+                "score":   score,
+                "color":   color,
+            })
+
+        names_str = (
+            f'<font color="#{C_MUTED.hexval()[2:]}">'
+            + " · ".join(p["display"] for p in powered_by_parts)
+            + "</font>"
+        )
+        scores_str = " · ".join(
+            f'<font color="#{p["color"].hexval()[2:]}"><b>{p["score"]}%</b></font>'
+            for p in powered_by_parts
+        )
+        powered_by_line = (
+            f'<font color="#{C_MUTED.hexval()[2:]}" size="7"><b>POWERED BY:</b></font>  '
+            f'<font size="7">{names_str}</font>  '
+            f'<font color="#{C_MUTED.hexval()[2:]}" size="7">— your current scores:</font>  '
+            f'<font size="7">{scores_str}</font>'
+        )
+
         block_content = Paragraph(
             f'<font color="#{C_WHITE.hexval()[2:]}"><b>{block_title}</b></font><br/>'
+            f'<br/>'
+            f'{powered_by_line}<br/>'
+            f'<br/>'
             f'<font color="#{C_MUTED.hexval()[2:]}" size="8">{block_body}</font>',
-            _style(f"tl_unlock_{block_title[:12]}", fontSize=9, leading=14, spaceAfter=2))
+            _style(f"tl_unlock_{block_title[:12]}", fontSize=9, leading=13, spaceAfter=2))
         block_card = Table([[block_content]], colWidths=[450])
         block_card.setStyle(TableStyle([
             ("BACKGROUND",    (0, 0), (-1, -1), C_CARD),
