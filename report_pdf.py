@@ -77,24 +77,40 @@ TOPLINE_COVER_SUBTITLE = (
 )
 
 TOPLINE_UNLOCKS_BLOCKS = [
-    (
-        "Be cited when customers research your category",
-        "Perplexity, ChatGPT, and Google AI Overviews now answer purchase-intent queries directly. "
-        "Brands that aren't indexed by AI crawlers are invisible in that answer — ceding the research "
-        "moment to competitors who are.",
-    ),
-    (
-        "Surface in AI shopping agents",
-        "A new layer of AI-powered comparison tools is being built on top of structured product data. "
-        "Brands with clean, machine-readable product information are included automatically; those "
-        "without are skipped entirely.",
-    ),
-    (
-        "Own your brand entity before competitors do",
-        "AI knowledge graphs are being assembled now, using publicly available structured data. "
-        "Establishing your organisation's entity — with verified links across the web — sets the "
-        "foundation for how AI describes your brand for years.",
-    ),
+    {
+        "heading": "Be cited when customers research your category",
+        # Citation needs both a discoverable AI guidance surface AND clean
+        # entity data so the AI knows what to cite about your brand.
+        "powered_by_pillars": ["ai_discoverability", "schema_entity"],
+        "body": (
+            "Perplexity, ChatGPT, and Google AI Overviews now answer purchase-intent "
+            "queries directly. Brands not indexed by AI crawlers are invisible in that "
+            "answer — the gap shows up as a missed mention every time a customer searches."
+        ),
+    },
+    {
+        "heading": "Surface in AI shopping agents",
+        # Shopping agents need structured product data — AND the product detail
+        # has to be in the raw HTML, not loaded later via JavaScript, because
+        # most AI crawlers don't execute scripts.
+        "powered_by_pillars": ["schema_entity", "js_rendering"],
+        "body": (
+            "A new layer of AI-powered comparison tools is being built on top of structured "
+            "product data. Brands with clean, machine-readable product information are "
+            "included automatically; those without are skipped entirely."
+        ),
+    },
+    {
+        "heading": "Own your brand entity before competitors do",
+        # Entity assembly needs structured data — AND crawlers need to reach
+        # the pages that publish it.
+        "powered_by_pillars": ["schema_entity", "robots_crawl"],
+        "body": (
+            "AI knowledge graphs are being assembled now, using publicly available "
+            "structured data. Establishing your organisation's entity sets the foundation "
+            "for how AI describes your brand for years."
+        ),
+    },
 ]
 
 TOPLINE_CTA_PRIMARY = (
@@ -1936,11 +1952,49 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
     story.append(Paragraph("What AI readiness unlocks", _S_H2()))
     story.append(_sp(10))
 
-    for block_title, block_body in TOPLINE_UNLOCKS_BLOCKS:
+    for block in TOPLINE_UNLOCKS_BLOCKS:
+        block_title       = block["heading"]
+        block_body        = block["body"]
+        powered_by_keys   = block["powered_by_pillars"]
+
+        # Build the coloured "Powered by" line. Each pillar's score is coloured
+        # using the existing _score_color() bands so the reader can see at a
+        # glance how well-positioned they are to claim this opportunity.
+        # Fails loudly via _topline_pillar_* if a key drifts.
+        powered_by_parts = []
+        for pkey in powered_by_keys:
+            display = _topline_pillar_display(pkey)
+            score   = _topline_pillar_score(audit, pkey)
+            color   = _score_color(score)
+            powered_by_parts.append({
+                "display": display,
+                "score":   score,
+                "color":   color,
+            })
+
+        names_str = (
+            f'<font color="#{C_MUTED.hexval()[2:]}">'
+            + " · ".join(p["display"] for p in powered_by_parts)
+            + "</font>"
+        )
+        scores_str = " · ".join(
+            f'<font color="#{p["color"].hexval()[2:]}"><b>{p["score"]}%</b></font>'
+            for p in powered_by_parts
+        )
+        powered_by_line = (
+            f'<font color="#{C_MUTED.hexval()[2:]}" size="7"><b>POWERED BY:</b></font>  '
+            f'<font size="7">{names_str}</font>  '
+            f'<font color="#{C_MUTED.hexval()[2:]}" size="7">— your current scores:</font>  '
+            f'<font size="7">{scores_str}</font>'
+        )
+
         block_content = Paragraph(
             f'<font color="#{C_WHITE.hexval()[2:]}"><b>{block_title}</b></font><br/>'
+            f'<br/>'
+            f'{powered_by_line}<br/>'
+            f'<br/>'
             f'<font color="#{C_MUTED.hexval()[2:]}" size="8">{block_body}</font>',
-            _style(f"tl_unlock_{block_title[:12]}", fontSize=9, leading=14, spaceAfter=2))
+            _style(f"tl_unlock_{block_title[:12]}", fontSize=9, leading=13, spaceAfter=2))
         block_card = Table([[block_content]], colWidths=[450])
         block_card.setStyle(TableStyle([
             ("BACKGROUND",    (0, 0), (-1, -1), C_CARD),
