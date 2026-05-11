@@ -210,7 +210,7 @@ def _render_audit_row(
             with _c_chk:
                 if _audit_id and _has_full and not _bulk_confirm:
                     _checked = st.checkbox(
-                        "",
+                        "Select this audit",
                         value=_is_selected,
                         key=f"chk_{_pfx}",
                         label_visibility="collapsed",
