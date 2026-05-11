@@ -55,7 +55,7 @@ from core.ui_helpers import (
     _md_to_html,
 )
 from core.ui_recommendations import build_recommendations
-from report_pdf import generate_report_pdf as _generate_report_pdf
+from report_pdf import generate_report_pdf as _generate_report_pdf, generate_topline_pdf as _generate_topline_pdf
 
 
 def render_results(audit: dict, get_secret_fn) -> None:
@@ -1101,7 +1101,7 @@ def render_results(audit: dict, get_secret_fn) -> None:
         "bot_crawl_results": bot_crawl_results,
     }), indent=2)
 
-    dl_col1, dl_col2 = st.columns(2)
+    dl_col1, dl_col2, dl_col3 = st.columns(3)
     with dl_col1:
         st.download_button(
             label="⬇ PDF Report",
@@ -1123,6 +1123,18 @@ def render_results(audit: dict, get_secret_fn) -> None:
             key="dl_json",
         )
         st.caption("Raw scores + full results for integrations.")
+    with dl_col3:
+        with st.spinner("Preparing topline summary..."):
+            topline_pdf = _generate_topline_pdf(audit=_audit_dict, domain=parsed.netloc)
+        st.download_button(
+            label="⬇ Topline Summary",
+            data=topline_pdf,
+            file_name=f"llm_topline_{domain_slug}_{date_slug}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key="dl_topline",
+        )
+        st.caption("Short teaser — share with prospects to book a walkthrough.")
 
     # ── FOOTER ────────────────────────────────────────────────────────────
     st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
