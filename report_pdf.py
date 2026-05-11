@@ -109,6 +109,66 @@ TOPLINE_CTA_FALLBACK = (
 
 TOPLINE_CTA_FALLBACK_URL = "https://au.pattern.com/contact"
 
+# ─── TOPLINE PILLAR REGISTRY ──────────────────────────────────────────────────
+# Topline-only pillar slugs. Maps a canonical key to (display_name, audit-dict
+# score key). Single source of truth for page 2 grouping, page 3 finding labels,
+# and page 4 "Powered by" lookups.
+#
+# Display names match the rest of the codebase ("JS Rendering", "Robots & Crawl")
+# rather than the longer form in the methodology doc. Drift between the two
+# would be confusing — flag in the PR if the doc changes.
+TOPLINE_PILLAR_REGISTRY = {
+    "js_rendering":       {"display": "JS Rendering",       "score_key": "js_score"},
+    "robots_crawl":       {"display": "Robots & Crawl",     "score_key": "robots_score"},
+    "schema_entity":      {"display": "Schema & Entity",    "score_key": "schema_score"},
+    "ai_discoverability": {"display": "AI Discoverability", "score_key": "llm_score"},
+    "semantic_hierarchy": {"display": "Semantic Hierarchy", "score_key": "semantic_score"},
+    "security":           {"display": "Security",           "score_key": "security_score"},
+}
+
+# Which pillars contribute to the weighted overall vs scored separately.
+# Weights (in core.llm_access_checks.compute_overall):
+#   JS Rendering 25% · Robots & Crawl 25% · Schema & Entity 35% · AI Discoverability 15%
+# Semantic Hierarchy and Security are tracked but not blended in.
+TOPLINE_PILLAR_GROUPS = {
+    "weighted":   ["js_rendering", "robots_crawl", "schema_entity", "ai_discoverability"],
+    "additional": ["semantic_hierarchy", "security"],
+}
+
+# Pillar weights — used only for the footnote string under the page 2 table.
+TOPLINE_PILLAR_WEIGHTS_NOTE = (
+    "Overall score is a weighted average: Schema & Entity 35%, JS Rendering 25%, "
+    "Robots & Crawl 25%, AI Discoverability 15%. Semantic Hierarchy and Security "
+    "are scored separately."
+)
+
+
+def _topline_pillar_score(audit: dict, pillar_key: str) -> int:
+    """Look up the integer score for a topline pillar key from the audit dict.
+
+    Raises KeyError if the slug isn't in TOPLINE_PILLAR_REGISTRY. Fail loudly —
+    drift between the registry and the audit shape should surface immediately,
+    not be papered over with a silent zero.
+    """
+    if pillar_key not in TOPLINE_PILLAR_REGISTRY:
+        raise KeyError(
+            f"Unknown topline pillar key {pillar_key!r}. "
+            f"Add it to TOPLINE_PILLAR_REGISTRY or fix the caller."
+        )
+    score_key = TOPLINE_PILLAR_REGISTRY[pillar_key]["score_key"]
+    return int(audit.get(score_key, 0) or 0)
+
+
+def _topline_pillar_display(pillar_key: str) -> str:
+    """Look up the human-facing display name for a topline pillar key."""
+    if pillar_key not in TOPLINE_PILLAR_REGISTRY:
+        raise KeyError(
+            f"Unknown topline pillar key {pillar_key!r}. "
+            f"Add it to TOPLINE_PILLAR_REGISTRY or fix the caller."
+        )
+    return TOPLINE_PILLAR_REGISTRY[pillar_key]["display"]
+
+
 # ─── BRAND ────────────────────────────────────────────────────────────────────
 # Single source of truth — must match BRAND dict in ai_access_checker.py
 BRAND = {
@@ -621,6 +681,71 @@ def _cover_page_flowables(domain: str, overall: int, grade_letter: str,
 
 
 # ─── TOPLINE HELPERS ──────────────────────────────────────────────────────────
+
+def _topline_pillar_rows(
+    audit: dict,
+    pillar_keys: list[str],
+    header_label: str | None = "Pillar",
+    subordinate: bool = False,
+) -> list:
+    """Build the page 2 pillar table rows.
+
+    pillar_keys: list of TOPLINE_PILLAR_REGISTRY slugs in render order.
+    header_label: column header text. If None, the table renders without a
+        header row — useful for the "Additional checks" section which has its
+        own kicker label above it.
+    subordinate: when True, the table uses a slightly more muted treatment so
+        readers eye it as secondary to the section above.
+
+    Returns a list of flowables (the table — wrapped in a list for easy
+    concatenation into the story array).
+    """
+    rows: list = []
+    if header_label is not None:
+        rows.append([header_label, "Performance", "%"])
+
+    for key in pillar_keys:
+        pname = _topline_pillar_display(key)
+        psc   = _topline_pillar_score(audit, key)
+        sc_color = _score_color(psc)
+        rows.append([
+            Paragraph(pname, _style(f"tl_pn_{key}", fontSize=9, textColor=C_WHITE,
+                                    fontName="Helvetica-Bold", leading=12)),
+            ScoreBar(psc, width=210, height=5),
+            Paragraph(f'<font color="#{sc_color.hexval()[2:]}"><b>{psc}%</b></font>',
+                      _style(f"tl_pp_{key}", fontSize=9, alignment=TA_CENTER)),
+        ])
+
+    tbl = Table(rows, colWidths=[170, 230, 50])
+    style_cmds = [
+        ("ROWBACKGROUNDS", (0, 1 if header_label else 0), (-1, -1), [C_BG, C_CARD]),
+        ("GRID",           (0, 0), (-1, -1), 0.4, C_BORDER),
+        ("LEFTPADDING",    (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING",   (0, 0), (-1, -1), 8),
+        ("TOPPADDING",     (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING",  (0, 0), (-1, -1), 8),
+        ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
+    ]
+    if header_label is not None:
+        style_cmds.extend([
+            ("BACKGROUND",    (0, 0), (-1, 0), C_SURFACE),
+            ("TEXTCOLOR",     (0, 0), (-1, 0), white),
+            ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE",      (0, 0), (-1, 0), 8),
+            ("ALIGN",         (0, 0), (-1, 0), "LEFT"),
+            ("TOPPADDING",    (0, 0), (-1, 0), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+        ])
+    if subordinate:
+        # Slightly slimmer rows to communicate "these are real but secondary".
+        style_cmds.extend([
+            ("TOPPADDING",    (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ])
+
+    tbl.setStyle(TableStyle(style_cmds))
+    return [tbl]
+
 
 def _build_headline_findings(audit: dict) -> list[tuple[str, str, str]]:
     """Rules-based generator. Returns up to 5 (headline, cost, severity) tuples,
@@ -1515,15 +1640,18 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
     grade_color   = _score_color(overall)
 
     pillar_scores = {
-        "JS Rendering":       int(audit.get("js_score",       0) or 0),
-        "Robots & Crawl":     int(audit.get("robots_score",   0) or 0),
-        "Schema & Entity":    int(audit.get("schema_score",   0) or 0),
-        "AI Discoverability": int(audit.get("llm_score",      0) or 0),
-        "Semantic Hierarchy": int(audit.get("semantic_score", 0) or 0),
-        "Security":           int(audit.get("security_score", 0) or 0),
+        _topline_pillar_display(k): _topline_pillar_score(audit, k)
+        for k in TOPLINE_PILLAR_REGISTRY
     }
-    sorted_pillars = sorted(pillar_scores.items(), key=lambda x: x[1])
-    weakest, strongest = sorted_pillars[0], sorted_pillars[-1]
+    # Weighted-only view drives Strongest / Priority Focus + the health summary
+    # sentence. Picking "Security" as Priority Focus would be misleading because
+    # Security is not in the overall — methodology honesty matters here.
+    weighted_scores = {
+        _topline_pillar_display(k): _topline_pillar_score(audit, k)
+        for k in TOPLINE_PILLAR_GROUPS["weighted"]
+    }
+    sorted_weighted = sorted(weighted_scores.items(), key=lambda x: x[1])
+    weakest, strongest = sorted_weighted[0], sorted_weighted[-1]
 
     headline_findings = _build_headline_findings(audit)
     recs = build_recommendations(audit, audit.get("no_blog", False))
@@ -1584,38 +1712,38 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
     story.append(Paragraph("Where AI visibility is leaking", _S_H2()))
     story.append(_sp(6))
 
-    # Pillar scores table — slate header (not purple), no Grade column
-    pillar_rows = [["Pillar", "Performance", "%"]]
-    for pname, psc in pillar_scores.items():
-        sc_color = _score_color(psc)
-        pillar_rows.append([
-            Paragraph(pname, _style(f"tl_pn_{pname}", fontSize=9, textColor=C_WHITE,
-                                    fontName="Helvetica-Bold")),
-            ScoreBar(psc, width=210, height=5),
-            Paragraph(f'<font color="#{sc_color.hexval()[2:]}"><b>{psc}%</b></font>',
-                      _style(f"tl_pp_{pname}", fontSize=9, alignment=TA_CENTER)),
-        ])
-    pt = Table(pillar_rows, colWidths=[170, 230, 50])
-    pt.setStyle(TableStyle([
-        ("BACKGROUND",     (0, 0), (-1, 0),  C_SURFACE),
-        ("TEXTCOLOR",      (0, 0), (-1, 0),  white),
-        ("FONTNAME",       (0, 0), (-1, 0),  "Helvetica-Bold"),
-        ("FONTSIZE",       (0, 0), (-1, 0),  8),
-        ("ALIGN",          (0, 0), (-1, 0),  "LEFT"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_BG, C_CARD]),
-        ("GRID",           (0, 0), (-1, -1), 0.4, C_BORDER),
-        ("LEFTPADDING",    (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING",   (0, 0), (-1, -1), 8),
-        ("TOPPADDING",     (0, 0), (-1, 0),  6),
-        ("BOTTOMPADDING",  (0, 0), (-1, 0),  6),
-        ("TOPPADDING",     (0, 1), (-1, -1), 8),
-        ("BOTTOMPADDING",  (0, 1), (-1, -1), 8),
-        ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
-    ]))
-    story.append(pt)
-    story.append(_sp(16))
+    # Section A — pillars that roll into the weighted overall.
+    story.extend(_topline_pillar_rows(
+        audit,
+        pillar_keys=TOPLINE_PILLAR_GROUPS["weighted"],
+        header_label="Pillar",
+    ))
+    story.append(_sp(14))
 
-    # Strongest / Priority Focus cards
+    # Section B — additional checks. Visually subordinated with a section label
+    # and a kicker that explicitly states they don't roll into the headline.
+    story.append(Paragraph(
+        f'<font color="#{C_MUTED.hexval()[2:]}" size="8"><b>ADDITIONAL CHECKS</b></font>'
+        f' <font color="#{C_MUTED.hexval()[2:]}" size="8">· scored separately</font>',
+        _style("tl_additional_kicker", fontSize=8, leading=11, spaceAfter=4),
+    ))
+    story.extend(_topline_pillar_rows(
+        audit,
+        pillar_keys=TOPLINE_PILLAR_GROUPS["additional"],
+        header_label=None,  # no header row — flows under the kicker label
+        subordinate=True,
+    ))
+    story.append(_sp(6))
+
+    # Methodology footnote — declares the weighting so readers can decode the table.
+    story.append(Paragraph(
+        TOPLINE_PILLAR_WEIGHTS_NOTE,
+        _style("tl_weights_note", fontSize=7, textColor=C_MUTED,
+               fontName="Helvetica-Oblique", leading=10, spaceAfter=10),
+    ))
+    story.append(_sp(8))
+
+    # Strongest / Priority Focus cards — derived from weighted pillars ONLY.
     sw_table = Table([[
         Paragraph(
             f'<font color="#{C_MUTED.hexval()[2:]}" size="7"><b>STRONGEST PILLAR</b></font><br/>'
@@ -1643,16 +1771,27 @@ def generate_topline_pdf(audit: dict, domain: str) -> bytes:
     ]))
     story.append(sw_table)
 
-    # Dynamic sentence summarising health spread
-    _healthy_count = sum(1 for s in pillar_scores.values() if s >= 70)
-    if _healthy_count > 0:
-        _health_word = "pillar is" if _healthy_count == 1 else "pillars are"
+    # Health summary — computed only from weighted pillars. If all 4 weighted
+    # pillars are ≥ 70%, the sentence shifts to point readers at the additional
+    # checks instead of inventing urgency that doesn't exist.
+    _weighted_values = list(weighted_scores.values())
+    _healthy_weighted = sum(1 for s in _weighted_values if s >= 70)
+    _total_weighted   = len(_weighted_values)
+    if _healthy_weighted == _total_weighted:
         _summary_sentence = (
-            f"{_healthy_count} {_health_word} healthy. "
+            "All weighted pillars are healthy. "
+            "See additional checks above for further improvements."
+        )
+    elif _healthy_weighted > 0:
+        _health_word = "pillar is" if _healthy_weighted == 1 else "pillars are"
+        _summary_sentence = (
+            f"{_healthy_weighted} weighted {_health_word} healthy. "
             f"{weakest[0]} needs immediate attention."
         )
     else:
-        _summary_sentence = f"All pillars need attention. {weakest[0]} is the priority."
+        _summary_sentence = (
+            f"All weighted pillars need attention. {weakest[0]} is the priority."
+        )
     story.append(_sp(8))
     story.append(Paragraph(
         _summary_sentence,
