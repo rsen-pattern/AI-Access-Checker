@@ -27,6 +27,7 @@ from core.persistence import (
     load_audit_by_id,
     is_history_authenticated,
 )
+from core.styles import inject_global_styles
 from core.ui_audit_form import render_audit_form
 from core.ui_history import render_history_tab
 from core.ui_results import render_results
@@ -36,38 +37,7 @@ from core.ui_audit_pipeline import execute_audit_pipeline
 # STREAMLIT UI — PATTERN BRANDED
 # ═══════════════════════════════════════════════════════════════════════════════
 
-st.markdown(f"""
-<style>
-    .stApp {{ background-color: {BRAND['bg_dark']}; }}
-    .stApp > header {{ background-color: {BRAND['bg_dark']}; }}
-    .stApp, .stApp p, .stApp span, .stApp li, .stApp div {{ color: {BRAND['white']}; }}
-    h1, h2, h3, h4 {{ color: {BRAND['white']} !important; }}
-    .stCaption, .stCaption p {{ color: {BRAND['text_secondary']} !important; }}
-    div[data-testid="stExpander"] {{ background: {BRAND['bg_card']}; border: 1px solid {BRAND['border']}; border-radius: 12px; margin-bottom: 0.5rem; }}
-    div[data-testid="stExpander"] details {{ border: none !important; }}
-    div[data-testid="stExpander"] summary {{ color: {BRAND['white']}; }}
-    div[data-testid="stExpander"] summary:hover {{ color: {BRAND['primary']}; }}
-    div[data-testid="stMetric"] {{ background: {BRAND['bg_surface']}; border: 1px solid {BRAND['border']}; border-radius: 10px; padding: 12px 16px; }}
-    div[data-testid="stMetric"] label {{ color: {BRAND['text_secondary']} !important; }}
-    div[data-testid="stMetric"] div[data-testid="stMetricValue"] {{ color: {BRAND['white']} !important; }}
-    .stButton > button[kind="primary"], button[data-testid="stBaseButton-primary"] {{ background: linear-gradient(135deg, {BRAND['purple']}, {BRAND['primary']}) !important; color: {BRAND['white']} !important; border: none !important; border-radius: 8px !important; font-weight: 600 !important; }}
-    .stTextInput > div > div > input {{ background: {BRAND['bg_surface']} !important; border: 1px solid {BRAND['border']} !important; color: {BRAND['white']} !important; border-radius: 8px !important; }}
-    .stTextInput > div > div > input:focus {{ border-color: {BRAND['primary']} !important; }}
-    .stTextArea > div > div > textarea {{ background: {BRAND['bg_surface']} !important; border: 1px solid {BRAND['border']} !important; color: {BRAND['white']} !important; border-radius: 8px !important; }}
-    .stProgress > div > div > div {{ background: linear-gradient(90deg, {BRAND['purple']}, {BRAND['primary']}) !important; }}
-    .stAlert {{ background: {BRAND['bg_surface']} !important; border: 1px solid {BRAND['border']} !important; border-radius: 10px !important; }}
-    hr {{ border-color: {BRAND['border']} !important; }}
-    .section-divider {{ border-top: 1px solid {BRAND['border']}; margin: 2rem 0 1.5rem 0; }}
-    .p-score-card {{ background: {BRAND['bg_card']}; border: 1px solid {BRAND['border']}; border-radius: 14px; padding: 1.2rem 0.8rem; text-align: center; }}
-    .p-score-num {{ font-size: 2rem; font-weight: 800; line-height: 1.1; color: {BRAND['white']}; }}
-    .p-score-label {{ font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1.5px; color: {BRAND['text_secondary']}; margin-top: 6px; }}
-    .nav-pill-active {{ background: linear-gradient(135deg, {BRAND['purple']}, {BRAND['primary']}); color: {BRAND['white']} !important; border: none !important; border-radius: 20px !important; font-weight: 700 !important; padding: 6px 20px !important; }}
-    .nav-pill {{ background: {BRAND['bg_surface']}; color: {BRAND['text_secondary']} !important; border: 1px solid {BRAND['border']} !important; border-radius: 20px !important; padding: 6px 20px !important; }}
-    /* Past Audits row hover affordance */
-    .hist-row {{ transition: background 0.15s ease; cursor: pointer; }}
-    .hist-row:hover {{ background: {BRAND['bg_card_hover']} !important; }}
-</style>
-""", unsafe_allow_html=True)
+inject_global_styles()
 
 
 # ── HEADER (Pattern logo + LLM Access Checker) ───────────────────────────────

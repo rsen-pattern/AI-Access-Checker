@@ -29,6 +29,7 @@ import streamlit as st
 
 from core.branding import BRAND, PATTERN_LOGO_SVG
 from core.persistence import is_history_authenticated
+from core.styles import score_legend_html
 from core.llm_access_checks import (
     AI_BOTS,
     pattern_brain_analysis,
@@ -152,7 +153,7 @@ def render_results(audit: dict, get_secret_fn) -> None:
                         "Content 1": "blog1", "Content 2": "blog2",
                         "Product 1": "prod1", "Product 2": "prod2",
                     }
-                    if st.button("🔄 Rerun", key="_rh_rerun", use_container_width=True):
+                    if st.button("🔄 Rerun", key="_rh_rerun", use_container_width=True, help="Rerun this audit with the same URLs"):
                         _inv = {v: k for k, v in (audit.get("url_labels") or {}).items()}
                         for _lbl, _wk in _LABEL_TO_KEY.items():
                             if _lbl in _inv:
@@ -191,13 +192,13 @@ def render_results(audit: dict, get_secret_fn) -> None:
                     )
                     st.session_state.pop("_rh_pdf_ready", None)
                 else:
-                    if st.button("📥 PDF", key="_rh_pdf_btn", use_container_width=True):
+                    if st.button("📥 PDF", key="_rh_pdf_btn", use_container_width=True, help="Download PDF report"):
                         st.session_state["_rh_pdf_ready"] = True
                         st.rerun()
             with _rh_b3:
                 if _rh_audit_id:
                     _rh_share_open = st.session_state.get("_rh_share_open")
-                    if st.button("🔗 Share", key="_rh_share_btn", use_container_width=True):
+                    if st.button("🔗 Share", key="_rh_share_btn", use_container_width=True, help="Copy shareable link to this report"):
                         st.session_state["_rh_share_open"] = not _rh_share_open
                         st.rerun()
                     if _rh_share_open and _rh_share_url:
@@ -361,6 +362,7 @@ def render_results(audit: dict, get_secret_fn) -> None:
         st.markdown(f'<div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;color:{BRAND["text_secondary"]};text-align:center;margin-bottom:8px;">LLM Access Audit</div>', unsafe_allow_html=True)
         st.markdown(f'<div style="text-align:center;">{gauge_svg}</div>', unsafe_allow_html=True)
         st.markdown(f'<div style="font-size:13px;color:{BRAND["text_secondary"]};text-align:center;margin-top:4px;">{parsed.netloc}</div>', unsafe_allow_html=True)
+        st.markdown(score_legend_html(), unsafe_allow_html=True)
 
     with col_pillars:
         overall_grade = overall_result.get("grade", {})

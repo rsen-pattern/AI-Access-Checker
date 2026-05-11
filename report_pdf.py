@@ -28,6 +28,7 @@ Requirements:
 from __future__ import annotations
 
 import io
+import re
 import time
 from typing import Optional
 
@@ -461,30 +462,37 @@ def _wordmark():
     return _pattern_logo(width_pt=150.0)
 
 
+_BOLD_RE      = re.compile(r'\*\*(.+?)\*\*')
+_NUMBERED_RE  = re.compile(r'^(\d+)[.)]\s+(.+)$')
+
+
+def _apply_bold(text: str) -> str:
+    """Convert balanced **...** markers to ReportLab <b>...</b> tags."""
+    return _BOLD_RE.sub(r'<b>\1</b>', text)
+
+
 def _exec_summary_flowables(pattern_brain: str) -> list:
-    """Render the Pattern Brain markdown-ish output as ReportLab flowables.
+    """Render the Pattern Brain markdown output as ReportLab flowables.
 
-    Handles `## ` and `### ` headings, `- / • / *` bullets, `1. `-style numbered
-    items, and falls back to plain paragraphs. `**bold**` markers are stripped
-    rather than parsed so we never produce unbalanced inline tags.
+    Handles ## / ### headings, - / • / * bullets, multi-digit numbered items
+    (1. … 99.), and **bold** markers. Falls back to plain paragraphs.
 
-    Changes:
-    - "Top 3 Quick Wins This Week" → "Top 3 Quick Wins" at render time
-    - Numbered items rendered as filled blue circle + 2-column Table
-    - ### headings bumped to 13pt with spaceBefore=14
-    - Body paragraphs after headings get spaceBefore=4
+    Changes vs original:
+    - Numbered items use regex so 10+ are detected and displayed correctly.
+    - **bold** converted to <b>...</b> instead of being stripped.
+    - "Top 3 Quick Wins This Week" → "Top 3 Quick Wins" at render time.
+    - ### headings 13pt with spaceBefore=14; body after heading gets spaceBefore=4.
     """
     out: list = []
     if not pattern_brain:
         return out
 
-    # Strip "This Week" suffix wherever it appears
     pattern_brain = pattern_brain.replace("Top 3 Quick Wins This Week", "Top 3 Quick Wins")
 
     out.append(_sp(12))
     out.append(Paragraph("Access Checker — Executive Summary", _S_H2()))
     out.append(Paragraph(
-        "AI-generated analysis powered by Pattern's Bifrost gateway",
+        "AI-generated analysis · Pattern Brain",
         _S_MUTED()))
     out.append(_section_divider())
     out.append(_sp(4))
@@ -496,48 +504,51 @@ def _exec_summary_flowables(pattern_brain: str) -> list:
             out.append(_sp(3))
             prev_was_heading = False
             continue
+
         if line.startswith("### "):
-            out.append(Paragraph(line[4:], _style("pb_h3", fontSize=13,
+            out.append(Paragraph(_apply_bold(line[4:]), _style("pb_h3", fontSize=13,
                 textColor=C_PRIMARY, fontName="Helvetica-Bold",
                 spaceBefore=14, spaceAfter=2)))
             prev_was_heading = True
         elif line.startswith("## "):
-            out.append(Paragraph(line[3:], _style("pb_h2", fontSize=12,
+            out.append(Paragraph(_apply_bold(line[3:]), _style("pb_h2", fontSize=12,
                 textColor=C_WHITE, fontName="Helvetica-Bold",
                 spaceBefore=8, spaceAfter=4)))
             prev_was_heading = True
         elif line.startswith(("• ", "- ", "* ")):
             out.append(Paragraph(
                 f'<font color="#{C_PRIMARY.hexval()[2:]}"><b>›</b></font>'
-                f'&nbsp;&nbsp;{line[2:]}',
+                f'&nbsp;&nbsp;{_apply_bold(line[2:])}',
                 _style("pb_bul", fontSize=9, textColor=C_WHITE, leading=14,
                        leftIndent=10, spaceAfter=2)))
             prev_was_heading = False
-        elif line and line[0].isdigit() and len(line) > 2 and line[1] in ".)":
-            # Numbered item — render as circle + text in a 2-column Table
-            body_text = line[2:].strip().replace("**", "")
-            num = int(line[0])
-            circle = NumberedCircle(num, diameter=14)
-            text_para = Paragraph(body_text, _style(
-                f"pb_num_{num}", fontSize=9, textColor=C_WHITE, leading=14,
-                spaceBefore=0, spaceAfter=0))
-            num_table = Table([[circle, text_para]], colWidths=[20, 440])
-            num_table.setStyle(TableStyle([
-                ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING",  (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("TOPPADDING",   (0, 0), (-1, -1), 2),
-                ("BOTTOMPADDING",(0, 0), (-1, -1), 2),
-            ]))
-            out.append(num_table)
-            out.append(_sp(2))
-            prev_was_heading = False
         else:
-            rendered = line.replace("**", "")
-            sb = 4 if prev_was_heading else 0
-            out.append(Paragraph(rendered, _style(f"pb_p_{sb}", fontSize=9,
-                textColor=C_WHITE, leading=14, spaceBefore=sb, spaceAfter=2)))
-            prev_was_heading = False
+            m = _NUMBERED_RE.match(line)
+            if m:
+                # Numbered item (supports 1–99) — circle + text in a 2-col Table
+                num       = int(m.group(1))
+                body_text = _apply_bold(m.group(2))
+                circle    = NumberedCircle(num, diameter=14)
+                text_para = Paragraph(body_text, _style(
+                    f"pb_num_{num}", fontSize=9, textColor=C_WHITE, leading=14,
+                    spaceBefore=0, spaceAfter=0))
+                num_table = Table([[circle, text_para]], colWidths=[20, 440])
+                num_table.setStyle(TableStyle([
+                    ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING",   (0, 0), (-1, -1), 2),
+                    ("BOTTOMPADDING",(0, 0), (-1, -1), 2),
+                ]))
+                out.append(num_table)
+                out.append(_sp(2))
+                prev_was_heading = False
+            else:
+                sb = 4 if prev_was_heading else 0
+                out.append(Paragraph(_apply_bold(line), _style(f"pb_p_{sb}", fontSize=9,
+                    textColor=C_WHITE, leading=14, spaceBefore=sb, spaceAfter=2)))
+                prev_was_heading = False
+
     return out
 
 
@@ -901,9 +912,25 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
         story.append(_sp(6))
 
     # ── 6. EXECUTIVE SUMMARY ─────────────────────────────────────────────────
+    story.append(PageBreak())
     if pattern_brain:
-        story.append(PageBreak())
         story.extend(_exec_summary_flowables(pattern_brain))
+    else:
+        # Fallback: render a static placeholder so the page is never silently absent.
+        story.append(_sp(12))
+        story.append(Paragraph("Access Checker — Executive Summary", _S_H2()))
+        story.append(Paragraph("AI-generated analysis · Pattern Brain", _S_MUTED()))
+        story.append(_section_divider())
+        story.append(_sp(8))
+        story.append(_callout(
+            "AI-generated executive summary unavailable for this audit. "
+            "This can occur when the Pattern Brain service is unreachable or the audit "
+            "was run without an active Bifrost API key. "
+            "See the Priority Recommendations on the following page for the same insights "
+            "in structured form.",
+            kind="warning",
+        ))
+        story.append(_sp(8))
 
     # ── 7. PER-PAGE SUMMARY ──────────────────────────────────────────────────
     story.append(PageBreak())
@@ -975,12 +1002,14 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
                 except (TypeError, ValueError):
                     severity, pillar, text = "warning", "", str(rec)
 
-            # Map severity → colour and kicker label
-            sev_lower = (severity or "warning").lower()
-            if sev_lower in ("critical", "danger"):
+            # Map severity → colour and kicker label.
+            # Accepts both legacy strings (critical/danger/warning/info) and
+            # the canonical enum values (error/warn/ok) from core.severity.
+            sev_lower = (severity or "warn").lower()
+            if sev_lower in ("error", "critical", "danger"):
                 color     = C_DANGER
                 sev_label = "CRITICAL"
-            elif sev_lower == "info":
+            elif sev_lower in ("ok", "info", "success"):
                 color     = C_PRIMARY
                 sev_label = "RECOMMENDATION"
             else:

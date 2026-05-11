@@ -315,12 +315,13 @@ def _render_audit_row(
                             _pdf_recs  = _br(_fr, bool(_fr.get("no_blog", False)))
                             _pdf_bytes = _grpdf(audit=_fr, domain=_pdf_dom, recs=_pdf_recs)
                         st.download_button(
-                            "📥",
+                            "📥 Save PDF",
                             data=_pdf_bytes,
                             file_name=f"llm_audit_{_dom}.pdf",
                             mime="application/pdf",
                             use_container_width=True,
                             key=f"pdf_dl_{_pfx}",
+                            help="Save PDF report to your device",
                         )
                         st.session_state.pop(_pdf_key, None)
                     else:

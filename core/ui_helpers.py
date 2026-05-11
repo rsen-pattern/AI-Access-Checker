@@ -123,8 +123,18 @@ def brand_pill(text, color=None):
 
 def brand_status(text, status="success"):
     colors = {"success": BRAND["teal"], "warning": BRAND["warning"], "danger": BRAND["danger"], "info": BRAND["primary"]}
+    # Non-colour cues satisfy WCAG 1.4.1 — shape (circle) + text prefix
+    icons  = {"success": "✓", "warning": "!", "danger": "✗", "info": "i"}
     c = colors.get(status, BRAND["primary"])
-    return f'<div style="display:flex;align-items:center;gap:8px;margin:4px 0;"><div style="width:8px;height:8px;border-radius:50%;background:{c};flex-shrink:0;"></div><span style="color:{BRAND["white"]};font-size:14px;">{text}</span></div>'
+    icon = icons.get(status, "·")
+    return (
+        f'<div style="display:flex;align-items:center;gap:8px;margin:4px 0;" role="listitem">'
+        f'<div style="width:16px;height:16px;border-radius:50%;background:{c};flex-shrink:0;'
+        f'display:flex;align-items:center;justify-content:center;'
+        f'font-size:10px;font-weight:700;color:#000;" aria-hidden="true">{icon}</div>'
+        f'<span style="color:{BRAND["white"]};font-size:14px;">{text}</span>'
+        f'</div>'
+    )
 
 
 def pillar_header(number, title, score):
