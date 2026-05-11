@@ -94,6 +94,14 @@ SCENARIOS = {
     "default":  _audit(),
     "critical": _audit(overall=38, js=30, schema=22, security=15, critical_exposure=True),
     "healthy":  _audit(overall=82, js=85, robots=90, schema=80, llm=78, semantic=60, security=72),
+    # Security low but NO critical-exposure detected. Verifies that:
+    # - The "private conversation" finding does NOT appear (gated correctly).
+    # - The new methodology-honest Security finding DOES appear with the
+    #   "real exposure risk" copy (not the old "drags your overall" claim).
+    "security_low_no_exposure": _audit(
+        overall=55, js=70, robots=75, schema=65, llm=50,
+        semantic=80, security=25, critical_exposure=False,
+    ),
 }
 
 
