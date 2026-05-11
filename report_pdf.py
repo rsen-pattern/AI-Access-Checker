@@ -68,6 +68,41 @@ PATTERN_LOGO_SVG = '''<svg width="180" height="36" viewBox="0 0 675 135.7" fill=
 
 PATTERN_WEBSITE = "https://au.pattern.com/"
 
+# ─── TOPLINE COPY ─────────────────────────────────────────────────────────────
+# Static strings for the topline summary PDF — edit here, not in layout code.
+
+TOPLINE_COVER_SUBTITLE = (
+    "How discoverable is your brand to ChatGPT, Claude, and Perplexity?"
+)
+
+TOPLINE_UNLOCKS_BLOCKS = [
+    (
+        "Be cited when customers research your category",
+        "Perplexity, ChatGPT, and Google AI Overviews now answer purchase-intent queries directly. "
+        "Brands that aren't indexed by AI crawlers are invisible in that answer — ceding the research "
+        "moment to competitors who are.",
+    ),
+    (
+        "Surface in AI shopping agents",
+        "A new layer of AI-powered comparison tools is being built on top of structured product data. "
+        "Brands with clean, machine-readable product information are included automatically; those "
+        "without are skipped entirely.",
+    ),
+    (
+        "Own your brand entity before competitors do",
+        "AI knowledge graphs are being assembled now, using publicly available structured data. "
+        "Establishing your organisation's entity — with verified links across the web — sets the "
+        "foundation for how AI describes your brand for years.",
+    ),
+]
+
+TOPLINE_CTA_TEMPLATE = (
+    "Your audit identified {n_findings} findings across {weakest_pillar} and {n_other} other areas. "
+    "In the walkthrough we'll go through each one, the prioritised fix order, and how your scores "
+    "compare to others in your category. The full report includes pillar-by-pillar detail, "
+    "page-level breakdowns, and the AI analysis behind every finding."
+)
+
 # ─── BRAND ────────────────────────────────────────────────────────────────────
 # Single source of truth — must match BRAND dict in ai_access_checker.py
 BRAND = {
@@ -567,6 +602,135 @@ def _cover_page_flowables(domain: str, overall: int, grade_letter: str,
         ScoreLegend(width=460),
         PageBreak(),
     ]
+
+
+# ─── TOPLINE HELPERS ──────────────────────────────────────────────────────────
+
+def _build_headline_findings(audit: dict) -> list[tuple[str, str]]:
+    """Rules-based generator. Returns up to 5 (headline, cost) tuples,
+    in priority order. Symptom-only — never names the fix."""
+    robots_result  = audit.get("robots_result",  {}) or {}
+    schema_results = audit.get("schema_results", {}) or {}
+    llm_result     = audit.get("llm_result",     {}) or {}
+    security_result = audit.get("security_result", {}) or {}
+
+    js_score     = int(audit.get("js_score",     0) or 0)
+    schema_score = int(audit.get("schema_score", 0) or 0)
+
+    pillar_scores = {
+        "JS Rendering":       int(audit.get("js_score",       0) or 0),
+        "Robots & Crawl":     int(audit.get("robots_score",   0) or 0),
+        "Schema & Entity":    int(audit.get("schema_score",   0) or 0),
+        "AI Discoverability": int(audit.get("llm_score",      0) or 0),
+        "Semantic Hierarchy": int(audit.get("semantic_score", 0) or 0),
+        "Security":           int(audit.get("security_score", 0) or 0),
+    }
+    weakest_pillar = min(pillar_scores, key=pillar_scores.get)
+    weakest_score  = pillar_scores[weakest_pillar]
+
+    cf = robots_result.get("cloudflare", {}) or {}
+    findings: list[tuple[str, str]] = []
+
+    # 1. Cloudflare blocking AI bots
+    if cf.get("bot_fight_mode_likely"):
+        findings.append((
+            "AI crawlers are being blocked before they reach your content.",
+            "GPTBot and ClaudeBot are returning 403s on key pages. This is invisible in your "
+            "analytics but means your brand isn't being indexed by training datasets or "
+            "real-time AI search.",
+        ))
+
+    # 2. No robots.txt
+    if not robots_result.get("found"):
+        findings.append((
+            "Your site has no instructions for AI crawlers.",
+            "Without crawl instructions, AI systems have no explicit guidance on which pages to "
+            "index — leading to inconsistent crawl patterns and missed content.",
+        ))
+
+    # 3. Severe JS rendering gap
+    if js_score < 50:
+        findings.append((
+            "AI sees a near-empty version of your site.",
+            "A large portion of your page content only appears after JavaScript executes. "
+            "AI crawlers receive a stripped-down page — missing product descriptions, pricing, "
+            "and the copy that should drive citations.",
+        ))
+
+    # 4. Zero schema
+    if schema_score < 25:
+        findings.append((
+            "AI has no structured data to understand your products.",
+            "Without machine-readable metadata, AI systems can't reliably surface your product "
+            "details, pricing, or brand in shopping queries. It's the difference between being "
+            "found and being invisible.",
+        ))
+
+    # 5. No GTIN/MPN on product pages
+    if len(findings) < 5:
+        product_pages_missing = [
+            url for url, res in schema_results.items()
+            if isinstance(res, dict)
+            and (res.get("ecommerce") or {}).get("is_product_page")
+            and not (res.get("ecommerce") or {}).get("has_gtin_or_mpn")
+        ]
+        if product_pages_missing:
+            findings.append((
+                "AI shopping agents can't identify your products.",
+                "Your product pages are missing the universal identifiers AI purchasing agents "
+                "use to match products across catalogues. Without them, your products won't "
+                "appear when an AI agent is asked to compare or recommend items in your category.",
+            ))
+
+    # 6. No llm.txt and no AI Info Page
+    if len(findings) < 5:
+        llm_txt_data = llm_result.get("llm_txt", llm_result.get("files", {})) or {}
+        ai_info      = llm_result.get("ai_info_page", {}) or {}
+        has_llm_txt  = any(v.get("found") for v in llm_txt_data.values()) if llm_txt_data else False
+        has_ai_info  = ai_info.get("found", False)
+        if not has_llm_txt and not has_ai_info:
+            findings.append((
+                "Your brand has no official voice in AI training pipelines.",
+                "When AI systems assemble their understanding of your brand, they use whatever "
+                "public content they can find. Without a designated guidance page, that narrative "
+                "is shaped by third parties — review sites, aggregators, competitors.",
+            ))
+
+    # 7. No Organisation sameAs
+    if len(findings) < 5:
+        has_org_sameas = any(
+            res.get("has_org_sameas")
+            for res in schema_results.values()
+            if isinstance(res, dict)
+        )
+        if not has_org_sameas:
+            findings.append((
+                "AI can't verify who you are across the web.",
+                "Your organisation's structured data doesn't include links to your verified "
+                "profiles on social platforms or authoritative directories. Without these, AI "
+                "knowledge graphs treat you as an unverified entity — reducing citation confidence.",
+            ))
+
+    # 8. Critical security exposure
+    if len(findings) < 5:
+        critical_security = (security_result.get("findings", {}) or {}).get("critical", [])
+        if critical_security:
+            findings.append((
+                "A sensitive exposure was identified that warrants a private conversation.",
+                "One or more findings in this area are significant enough that we'd prefer to "
+                "walk you through them directly rather than detail them in this summary.",
+            ))
+
+    # 9. Generic fallback — weakest pillar critically low
+    if len(findings) < 3 and weakest_score < 40:
+        findings.append((
+            f"Your {weakest_pillar} score is critically low.",
+            f"At {weakest_score}%, this pillar is dragging your overall readiness score. "
+            "AI systems rely on multiple signals working together — a gap this large in one "
+            "area limits the impact of improvements elsewhere.",
+        ))
+
+    return findings[:5]
 
 
 # ─── MAIN GENERATOR ───────────────────────────────────────────────────────────
@@ -1292,4 +1456,247 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
         canvas.restoreState()
 
     doc.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
+    return buf.getvalue()
+
+
+# ─── TOPLINE SUMMARY GENERATOR ────────────────────────────────────────────────
+
+def generate_topline_pdf(audit: dict, domain: str) -> bytes:
+    """Generate a 5-page sales teaser PDF. Symptom-only — never names fixes."""
+    from core.ui_recommendations import build_recommendations  # local import avoids module-level cycle
+
+    overall       = int(audit.get("overall", 0) or 0)
+    overall_grade = audit.get("overall_grade", {})
+    grade_letter  = overall_grade.get("letter", "?") if isinstance(overall_grade, dict) else "?"
+    grade_label   = overall_grade.get("label", "")  if isinstance(overall_grade, dict) else ""
+    grade_color   = _score_color(overall)
+
+    pillar_scores = {
+        "JS Rendering":       int(audit.get("js_score",       0) or 0),
+        "Robots & Crawl":     int(audit.get("robots_score",   0) or 0),
+        "Schema & Entity":    int(audit.get("schema_score",   0) or 0),
+        "AI Discoverability": int(audit.get("llm_score",      0) or 0),
+        "Semantic Hierarchy": int(audit.get("semantic_score", 0) or 0),
+        "Security":           int(audit.get("security_score", 0) or 0),
+    }
+    sorted_pillars = sorted(pillar_scores.items(), key=lambda x: x[1])
+    weakest, strongest = sorted_pillars[0], sorted_pillars[-1]
+
+    headline_findings = _build_headline_findings(audit)
+    recs = build_recommendations(audit, audit.get("no_blog", False))
+    n_findings = len(recs)
+    n_other    = max(0, sum(1 for s in pillar_scores.values() if s < 75) - 1)
+
+    # ── Document ──────────────────────────────────────────────────────────────
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=18*mm, rightMargin=18*mm,
+        topMargin=18*mm, bottomMargin=22*mm,
+        title=f"Pattern LLM Readiness — Topline Summary — {domain}",
+    )
+    story: list = []
+    timestamp = time.strftime("%Y-%m-%d %H:%M UTC")
+
+    # ── PAGE 1: COVER ─────────────────────────────────────────────────────────
+    logo = _pattern_logo(width_pt=180.0)
+    story.extend([
+        _sp(100),
+        logo,
+        _sp(16),
+        Paragraph(
+            f'<font color="#{C_WHITE.hexval()[2:]}"><b>{domain}</b></font>',
+            _style("tl_cov_domain", fontSize=24, fontName="Helvetica-Bold",
+                   alignment=TA_CENTER, leading=28, spaceAfter=4)),
+        Paragraph(
+            TOPLINE_COVER_SUBTITLE,
+            _style("tl_cov_sub", fontSize=10, textColor=C_MUTED,
+                   fontName="Helvetica", alignment=TA_CENTER, leading=14, spaceAfter=2)),
+        Paragraph(
+            f'Generated {timestamp}',
+            _style("tl_cov_ts", fontSize=8, textColor=C_MUTED,
+                   fontName="Helvetica", alignment=TA_CENTER, leading=11, spaceAfter=20)),
+        _sp(20),
+        Paragraph(
+            f'<font color="#{grade_color.hexval()[2:]}"><b>{overall}%</b></font>',
+            _style("tl_cov_score", fontSize=64, fontName="Helvetica-Bold",
+                   alignment=TA_CENTER, leading=68, spaceAfter=4)),
+        Paragraph(
+            "Overall LLM Readiness",
+            _style("tl_cov_rlbl", fontSize=11, textColor=C_MUTED,
+                   fontName="Helvetica", alignment=TA_CENTER, leading=14, spaceAfter=6)),
+        Paragraph(
+            f'<font color="#{grade_color.hexval()[2:]}"><b>Grade {grade_letter}</b></font>'
+            f'<font color="#{C_MUTED.hexval()[2:]}"> — {grade_label}</font>',
+            _style("tl_cov_grade", fontSize=14, fontName="Helvetica-Bold",
+                   alignment=TA_CENTER, leading=18, spaceAfter=30)),
+        _sp(24),
+        ScoreLegend(width=460),
+        PageBreak(),
+    ])
+
+    # ── PAGE 2: WHERE AI VISIBILITY IS LEAKING ────────────────────────────────
+    story.append(_sp(12))
+    story.append(Paragraph("Where AI visibility is leaking", _S_H2()))
+    story.append(_sp(6))
+
+    # Pillar scores table
+    pillar_rows = [["Pillar", "Score Bar", "%", "Grade"]]
+    for pname, psc in pillar_scores.items():
+        gl, _ = _grade(psc)
+        sc_color = _score_color(psc)
+        pillar_rows.append([
+            Paragraph(pname, _style(f"tl_pn_{pname}", fontSize=9, textColor=C_WHITE,
+                                    fontName="Helvetica-Bold")),
+            ScoreBar(psc, width=160, height=5),
+            Paragraph(f'<font color="#{sc_color.hexval()[2:]}"><b>{psc}%</b></font>',
+                      _style(f"tl_pp_{pname}", fontSize=9, alignment=TA_CENTER)),
+            Paragraph(f'<font color="#{sc_color.hexval()[2:]}"><b>{gl}</b></font>',
+                      _style(f"tl_pg_{pname}", fontSize=10, alignment=TA_CENTER,
+                             fontName="Helvetica-Bold")),
+        ])
+    pt = Table(pillar_rows, colWidths=[170, 180, 50, 50])
+    pt.setStyle(_table_header_style())
+    story.append(pt)
+    story.append(_sp(16))
+
+    # Strongest / Priority Focus cards
+    sw_table = Table([[
+        Paragraph(
+            f'<font color="#{C_MUTED.hexval()[2:]}" size="7"><b>STRONGEST PILLAR</b></font><br/>'
+            f'<br/>'
+            f'<font color="#{_score_color(strongest[1]).hexval()[2:]}" size="11"><b>{strongest[0]}</b></font>'
+            f'<font color="#{C_WHITE.hexval()[2:]}" size="11"> — {strongest[1]}%</font>',
+            _style("tl_strong", fontSize=9, leading=14)),
+        Paragraph(
+            f'<font color="#{C_MUTED.hexval()[2:]}" size="7"><b>PRIORITY FOCUS</b></font><br/>'
+            f'<br/>'
+            f'<font color="#{_score_color(weakest[1]).hexval()[2:]}" size="11"><b>{weakest[0]}</b></font>'
+            f'<font color="#{C_WHITE.hexval()[2:]}" size="11"> — {weakest[1]}%</font>',
+            _style("tl_weak", fontSize=9, leading=14)),
+    ]], colWidths=[225, 225])
+    sw_table.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (0, 0), C_CARD),
+        ("BACKGROUND",    (1, 0), (1, 0), C_CARD),
+        ("LINEBEFORE",    (0, 0), (0, 0), 3, _score_color(strongest[1])),
+        ("LINEBEFORE",    (1, 0), (1, 0), 3, _score_color(weakest[1])),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 14),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 14),
+        ("TOPPADDING",    (0, 0), (-1, -1), 14),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+    ]))
+    story.append(sw_table)
+    story.append(PageBreak())
+
+    # ── PAGE 3: WHAT'S BEHIND THE SCORE ──────────────────────────────────────
+    story.append(_sp(12))
+    story.append(Paragraph("What's behind the score", _S_H2()))
+    story.append(_sp(10))
+
+    for i, (headline, cost) in enumerate(headline_findings, start=1):
+        card_content = Paragraph(
+            f'<font color="#{C_MUTED.hexval()[2:]}" size="8"><b>{i}</b></font>  '
+            f'<font color="#{C_WHITE.hexval()[2:]}"><b>{headline}</b></font><br/>'
+            f'<font color="#{C_MUTED.hexval()[2:]}" size="8">{cost}</font>',
+            _style(f"tl_find_{i}", fontSize=9, leading=14, spaceAfter=2))
+        card = Table([[card_content]], colWidths=[450])
+        card.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, -1), C_CARD),
+            ("LINEBEFORE",    (0, 0), (-1, -1), 3, C_PRIMARY),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 14),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 14),
+            ("TOPPADDING",    (0, 0), (-1, -1), 12),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+        ]))
+        story.append(card)
+        story.append(_sp(8))
+
+    story.append(PageBreak())
+
+    # ── PAGE 4: WHAT AI READINESS UNLOCKS ─────────────────────────────────────
+    story.append(_sp(12))
+    story.append(Paragraph("What AI readiness unlocks", _S_H2()))
+    story.append(_sp(10))
+
+    for block_title, block_body in TOPLINE_UNLOCKS_BLOCKS:
+        block_content = Paragraph(
+            f'<font color="#{C_WHITE.hexval()[2:]}"><b>{block_title}</b></font><br/>'
+            f'<font color="#{C_MUTED.hexval()[2:]}" size="8">{block_body}</font>',
+            _style(f"tl_unlock_{block_title[:12]}", fontSize=9, leading=14, spaceAfter=2))
+        block_card = Table([[block_content]], colWidths=[450])
+        block_card.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, -1), C_CARD),
+            ("LINEBEFORE",    (0, 0), (-1, -1), 3, C_TEAL),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 14),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 14),
+            ("TOPPADDING",    (0, 0), (-1, -1), 12),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+        ]))
+        story.append(block_card)
+        story.append(_sp(10))
+
+    story.append(PageBreak())
+
+    # ── PAGE 5: BOOK A WALKTHROUGH ────────────────────────────────────────────
+    story.append(_sp(12))
+    story.append(Paragraph("Book a 45-min walkthrough", _S_H2()))
+    story.append(_sp(10))
+
+    cta_para = TOPLINE_CTA_TEMPLATE.format(
+        n_findings=n_findings,
+        weakest_pillar=weakest[0],
+        n_other=n_other,
+    )
+    story.append(Paragraph(cta_para, _style("tl_cta_body", fontSize=10, textColor=C_WHITE,
+                                             fontName="Helvetica", leading=16, spaceAfter=8)))
+    story.append(_sp(20))
+
+    cta_link_text = (
+        f'<font color="#{C_PRIMARY.hexval()[2:]}"><b>'
+        f'<a href="{PATTERN_WEBSITE}">au.pattern.com</a>'
+        f'</b></font>'
+    )
+    cta_card_content = Paragraph(
+        f'<font color="#{C_MUTED.hexval()[2:]}" size="8"><b>BOOK YOUR WALKTHROUGH</b></font><br/><br/>'
+        + cta_link_text,
+        _style("tl_cta_card", fontSize=12, alignment=TA_CENTER, leading=18))
+    cta_card = Table([[cta_card_content]], colWidths=[450])
+    cta_card.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), C_CARD),
+        ("LINEBEFORE",    (0, 0), (-1, -1), 3, C_PRIMARY),
+        ("LINEAFTER",     (0, 0), (-1, -1), 3, C_PRIMARY),
+        ("LINETOP",       (0, 0), (-1, -1), 3, C_PRIMARY),
+        ("LINEBELOW",     (0, 0), (-1, -1), 3, C_PRIMARY),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 24),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 24),
+        ("TOPPADDING",    (0, 0), (-1, -1), 20),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 20),
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+    ]))
+    story.append(cta_card)
+
+    # ── Page background + page numbers ────────────────────────────────────────
+    def _on_page_topline(canvas, doc_):
+        canvas.saveState()
+        canvas.setFillColor(C_BG)
+        canvas.rect(0, 0, A4[0], A4[1], fill=1, stroke=0)
+        page_num = canvas.getPageNumber()
+        canvas.setFillColor(C_MUTED)
+        canvas.setFont("Helvetica", 7)
+        canvas.drawString(18*mm, 12*mm, f"{domain}  ·  Pattern LLM Readiness — Topline Summary")
+        canvas.drawRightString(A4[0] - 18*mm, 12*mm, f"Page {page_num}")
+        link_text = "au.pattern.com"
+        canvas.setFillColor(C_PRIMARY)
+        text_w = canvas.stringWidth(link_text, "Helvetica", 7)
+        cx = (A4[0] - text_w) / 2
+        canvas.drawString(cx, 12*mm, link_text)
+        canvas.linkURL(
+            PATTERN_WEBSITE,
+            (cx - 2, 12*mm - 2, cx + text_w + 2, 12*mm + 8),
+            relative=0, thickness=0,
+        )
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=_on_page_topline, onLaterPages=_on_page_topline)
     return buf.getvalue()
