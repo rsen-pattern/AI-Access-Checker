@@ -778,6 +778,70 @@ def check_js_rendering(url, get_secret, page_type="general"):
 #   CSS/JS blocked (prevents AI from understanding site):   noted separately
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _content_matches_sensitive_path(text: str, cat: str, path: str) -> bool:
+    """
+    Return True only when the response body looks like genuinely sensitive content
+    for this category and path — not a generic homepage or redirect landing page.
+
+    This prevents false-positives where /.env (or similar) redirects to the homepage
+    and the final 200 response is just normal page HTML.
+    """
+    if not text or len(text) < 10:
+        return False
+
+    text_lower = text.lower()
+    stripped = text.lstrip()
+
+    if cat == "critical":
+        # Environment / config files: KEY=VALUE lines, or JSON with secret-looking keys
+        if re.search(r'^[A-Z_]{3,}\s*=\s*.+', text, re.MULTILINE):
+            return True
+        # JSON/YAML blobs containing credential-like keys
+        secret_keys = ("password", "secret", "api_key", "token", "database_url",
+                       "private_key", "access_key", "auth_token", "credentials")
+        if any(kw in text_lower for kw in secret_keys):
+            # Must look like structured data, not a prose webpage mentioning the word
+            if stripped.startswith(("{", "[")) or re.search(r'[A-Z_]{3,}\s*=', text):
+                return True
+        # Git config
+        if "[core]" in text and "repositoryformatversion" in text:
+            return True
+        # PHP config / debug logs exposing DB credentials
+        if "define(" in text_lower and ("db_password" in text_lower or "auth_key" in text_lower):
+            return True
+        # Admin login pages are a real exposure (not env data, but genuine admin access)
+        if path in ("/admin", "/administrator", "/wp-admin", "/wp-login.php",
+                    "/phpmyadmin", "/adminer") and (
+            "login" in text_lower or "username" in text_lower or "password" in text_lower
+        ):
+            return True
+        return False
+
+    elif cat == "backend":
+        # API / backend: valid JSON response (array or object) is a real signal
+        if stripped.startswith(("{", "[")):
+            try:
+                import json as _json
+                _json.loads(text)
+                return True
+            except Exception:
+                pass
+        # GraphQL introspection or XML-RPC response
+        if "introspection" in text_lower or "__schema" in text_lower:
+            return True
+        if "<?xml" in text_lower and ("methodresponse" in text_lower or "fault" in text_lower):
+            return True
+        return False
+
+    elif cat == "customer":
+        # Customer-facing pages: flag if they render without an auth redirect
+        # (the caller adds a more granular `contains_sensitive_content` flag)
+        return True
+
+    # Unknown category — allow through so we don't silently drop new categories
+    return True
+
+
 def check_security_exposure(base_url, robots_raw: str = "", homepage_html: str = "", sensitive_paths: dict = None):
     """
     Standalone security score — checks whether sensitive data is exposed to AI bots.
@@ -856,7 +920,10 @@ def check_security_exposure(base_url, robots_raw: str = "", homepage_html: str =
 
     for cat, path, resp in _path_results:
         if resp and resp.status_code not in (403, 404, 401, 410):
-            finding = {"path": path, "status": resp.status_code, "risk": _risks[cat], "size": len(resp.text)}
+            if not _content_matches_sensitive_path(resp.text, cat, path):
+                continue
+            finding = {"path": path, "status": resp.status_code, "risk": _risks[cat], "size": len(resp.text),
+                       "redirected": bool(resp.history)}
             if cat == "customer":
                 soup_c = BeautifulSoup(resp.text, "html.parser")
                 finding["contains_sensitive_content"] = any(
