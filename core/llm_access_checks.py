@@ -856,6 +856,10 @@ def check_security_exposure(base_url, robots_raw: str = "", homepage_html: str =
 
     for cat, path, resp in _path_results:
         if resp and resp.status_code not in (403, 404, 401, 410):
+            # If the request was redirected, the sensitive path is not directly serving
+            # its content — e.g. /.env → 301 → homepage is not a real exposure.
+            if resp.history:
+                continue
             finding = {"path": path, "status": resp.status_code, "risk": _risks[cat], "size": len(resp.text)}
             if cat == "customer":
                 soup_c = BeautifulSoup(resp.text, "html.parser")
