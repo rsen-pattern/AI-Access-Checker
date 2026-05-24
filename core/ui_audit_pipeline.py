@@ -30,6 +30,7 @@ from core.llm_access_checks import (
     compute_overall,
     fetch,
     run_live_bot_crawl,
+    TOTAL_BOT_COUNT,
 )
 from core.persistence import (
     get_supabase,
@@ -138,7 +139,7 @@ def execute_audit_pipeline(
 
     # Per-step timing estimates (seconds)
     t_js        = n_pages * (18 if has_js_api else 5)   # JS render is slow if API key present
-    t_robots    = 35   # robots + Cloudflare live bot tests (16 bots × ~2s)
+    t_robots    = 35   # robots + Cloudflare live bot tests
     t_schema    = n_pages * 4
     t_llm       = 15   # llm.txt paths + AI info page checks
     t_security  = 25   # sensitive path crawls (4 categories × ~3-4 paths each)
@@ -151,11 +152,11 @@ def execute_audit_pipeline(
 
     # Show the timing breakdown card
     js_label       = f"~{t_js}s {'(JS render API active)' if has_js_api else '(HTML-only, add render API key for full comparison)'}"
-    robots_label   = f"~{t_robots}s (robots.txt + 16 live bot crawl tests + Cloudflare check)"
+    robots_label   = f"~{t_robots}s (robots.txt + {TOTAL_BOT_COUNT} live bot crawl tests + Cloudflare check)"
     schema_label   = f"~{t_schema}s ({n_pages} pages × schema + entity)"
     llm_label      = f"~{t_llm}s (llm.txt variants + AI info page detection + well-known files)"
     security_label = f"~{t_security}s (critical / backend / customer / HTML exposure checks)"
-    botcrawl_label = f"~{t_botcrawl}s (sending requests as 16 AI bots)" if run_bot_crawl else "Skipped"
+    botcrawl_label = f"~{t_botcrawl}s (sending requests as {TOTAL_BOT_COUNT} AI bots)" if run_bot_crawl else "Skipped"
     brain_label    = f"~{t_brain}s (4 AI analysis calls via Bifrost)" if has_bifrost else "Skipped (add BIFROST_API_KEY to enable)"
 
     st.markdown(f"""
@@ -204,7 +205,7 @@ def execute_audit_pipeline(
     progress.progress(18, text=f"[2/6] Robots & Crawlability — fetching robots.txt + Cloudflare check… · {elapsed}s elapsed")
     homepage_resp, _ = fetch(url)
     homepage_html = homepage_resp.text if homepage_resp else ""
-    progress.progress(20, text=f"[2/6] Robots & Crawlability — running 16 live bot crawl tests… · {elapsed}s elapsed")
+    progress.progress(20, text=f"[2/6] Robots & Crawlability — running {TOTAL_BOT_COUNT} live bot crawl tests… · {elapsed}s elapsed")
     robots_result = check_robots_crawlability(base_url, homepage_html)
     robots_score = robots_result.get("score", 0)
 
@@ -277,7 +278,7 @@ def execute_audit_pipeline(
     bot_crawl_results = {}
     if run_bot_crawl:
         elapsed = round(time.time() - audit_start)
-        progress.progress(80, text=f"[7/7] Live Bot Crawl — sending requests as 16 AI bots… · {elapsed}s elapsed (~{t_botcrawl}s remaining)")
+        progress.progress(80, text=f"[7/7] Live Bot Crawl — sending requests as {TOTAL_BOT_COUNT} AI bots… · {elapsed}s elapsed (~{t_botcrawl}s remaining)")
         bot_crawl_results = run_live_bot_crawl(url, robots_result.get("parser"))
 
     # ── ANTI-BOT BLOCK DETECTION (5 signals — 2 of 5 = halt, 1 of 5 = warn) ─

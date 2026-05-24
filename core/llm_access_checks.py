@@ -112,12 +112,15 @@ AI_BOTS = {
         "OAI-SearchBot": "OAI-SearchBot/1.0; +https://openai.com/searchbot",
     },
     "Anthropic": {
-        "ClaudeBot":   "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +claudebot@anthropic.com)",
-        "Claude-User": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Claude-User/1.0; +Claude-User@anthropic.com)",
+        "ClaudeBot":        "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +claudebot@anthropic.com)",
+        "Claude-User":      "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Claude-User/1.0; +Claude-User@anthropic.com)",
+        "Claude-SearchBot": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Claude-SearchBot/1.0; +https://www.anthropic.com)",
     },
     "Google": {
-        "Google-Extended": "Mozilla/5.0 (compatible; Google-Extended)",
-        "Googlebot":       "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        "Google-Extended":       "Mozilla/5.0 (compatible; Google-Extended)",
+        "Googlebot":             "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        "Google-CloudVertexBot": "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.7390.122 Mobile Safari/537.36 (compatible; Google-CloudVertexBot; +https://cloud.google.com/enterprise-search)",
+        "Gemini-Deep-Research":  "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Gemini-Deep-Research; +https://gemini.google/overview/deep-research/) Chrome/135.0.0.0 Safari/537.36",
     },
     "Perplexity": {
         "PerplexityBot":   "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; PerplexityBot/1.0; +https://perplexity.ai/perplexitybot)",
@@ -127,9 +130,21 @@ AI_BOTS = {
         "CCBot":              "CCBot/2.0 (https://commoncrawl.org/faq/)",
         "Bytespider":         "Mozilla/5.0 (compatible; Bytespider; spider-feedback@bytedance.com)",
         "Meta-ExternalAgent": "Mozilla/5.0 (compatible; Meta-ExternalAgent/1.0; +https://developers.facebook.com/docs/sharing/webmasters/crawler)",
+        "Meta-WebIndexer":    "meta-webindexer/1.1 (+https://developers.facebook.com/docs/sharing/webmasters/crawler)",
         "Amazonbot":          "Mozilla/5.0 (compatible; Amazonbot/0.1; +https://developer.amazon.com/support/amazonbot)",
         "Applebot-Extended":  "Mozilla/5.0 (Applebot-Extended/0.3; +http://www.apple.com/go/applebot)",
         "Cohere-ai":          "Mozilla/5.0 (compatible; cohere-ai)",
+        "DuckAssistBot":      "DuckAssistBot/1.2; (+http://duckduckgo.com/duckassistbot.html)",
+        "MistralAI-User":     "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; MistralAI-User/1.0; +https://docs.mistral.ai/robots)",
+        "Webz.io":            "webzio (+https://webz.io/bot.html)",
+        "Diffbot":            "Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.9.1.2) Gecko/20090729 Firefox/3.5.2 (.NET CLR 3.5.30729; Diffbot/0.1; +http://www.diffbot.com)",
+        "ICC-Crawler":        "ICC-Crawler/3.0 (Mozilla-compatible; ; https://ucri.nict.go.jp/en/icccrawler.html)",
+    },
+    "Search Engines": {
+        "Bingbot":     "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm) Chrome/116.0.1938.76 Safari/537.36",
+        "Slurp":       "Mozilla/5.0 (compatible; Yahoo! Slurp; http://help.yahoo.com/help/us/ysearch/slurp)",
+        "Baiduspider": "Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)",
+        "YandexBot":   "Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)",
     },
 }
 
@@ -138,10 +153,20 @@ BOT_TYPES = {
     "GPTBot": "training", "ClaudeBot": "training", "CCBot": "training",
     "Bytespider": "training", "Cohere-ai": "training", "Applebot-Extended": "training",
     "Google-Extended": "training", "Amazonbot": "training",
+    "Webz.io": "training", "Diffbot": "training", "ICC-Crawler": "training",
     "ChatGPT-User": "user_agent", "Claude-User": "user_agent",
-    "Perplexity-User": "user_agent", "OAI-SearchBot": "search",
-    "PerplexityBot": "search", "Googlebot": "search", "Meta-ExternalAgent": "social",
+    "Perplexity-User": "user_agent", "MistralAI-User": "user_agent",
+    "Google-CloudVertexBot": "user_agent", "Gemini-Deep-Research": "user_agent",
+    "OAI-SearchBot": "search", "Claude-SearchBot": "search",
+    "PerplexityBot": "search", "Googlebot": "search",
+    "DuckAssistBot": "search", "Meta-WebIndexer": "search",
+    "Bingbot": "search", "Slurp": "search",
+    "Baiduspider": "search", "YandexBot": "search",
+    "Meta-ExternalAgent": "social",
 }
+
+# Total count across all companies — used for UI labels so they stay in sync
+TOTAL_BOT_COUNT = sum(len(bots) for bots in AI_BOTS.values())
 
 # Key bots used in hard cap and access calculations
 KEY_AI_BOTS = ["GPTBot", "ChatGPT-User", "ClaudeBot", "PerplexityBot", "Claude-User"]
