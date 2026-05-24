@@ -54,7 +54,7 @@ PILLAR_INFO = {
         "why": "These files tell AI agents what your site does, what to prioritise, and how to interact with it. The Universal Commerce Protocol lets AI shopping agents discover your checkout capabilities. WebMCP lets agents interact with your site's tools. The AI Info Page is something you can build today — unlike llm.txt which has near 0% industry adoption — and it positions your brand to control its own AI narrative.",
     },
     "robots_txt": {
-        "what": "We parse your robots.txt against 16 AI bot user agents, check for sitemaps, blocked CSS/JS, and 25+ sensitive path exposures. We run live crawl tests as each AI bot. We also detect Cloudflare Bot Fight Mode — per BAISOM: 'Check if Cloudflare is not already blocking AI bots for you' — which silently blocks legitimate AI crawlers even when robots.txt allows them.",
+        "what": "We parse your robots.txt against 28 AI and search bot user agents, check for sitemaps, blocked CSS/JS, and 25+ sensitive path exposures. We run live crawl tests as each bot. We also detect Cloudflare Bot Fight Mode — per BAISOM: 'Check if Cloudflare is not already blocking AI bots for you' — which silently blocks legitimate AI crawlers even when robots.txt allows them.",
         "why": "robots.txt now controls AI access, not just search access. Blocking AI crawlers = choosing invisibility in AI answers. Cloudflare's Bot Fight Mode blocks ChatGPT-User (which surged 2,825% YoY) and PerplexityBot without any robots.txt instruction. A misconfigured Cloudflare setup can make your site invisible to AI agents regardless of all other optimisations.",
     },
     "schema": {
