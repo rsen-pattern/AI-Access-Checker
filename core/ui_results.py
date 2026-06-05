@@ -32,6 +32,7 @@ from core.persistence import is_history_authenticated
 from core.styles import score_legend_html
 from core.llm_access_checks import (
     AI_BOTS,
+    build_channel_readiness,
     pattern_brain_analysis,
     analyse_schema_quality,
     ai_analyse_js_gap,
@@ -474,6 +475,44 @@ def render_results(audit: dict, get_secret_fn) -> None:
         st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:10px;padding:14px 18px;border-left:3px solid {strong_color};"><div style="font-size:11px;color:{BRAND["text_secondary"]};text-transform:uppercase;letter-spacing:1px;">Strongest Pillar</div><div style="font-size:18px;font-weight:700;color:{strong_color};">{strongest_name} — {strongest_sc}%</div></div>', unsafe_allow_html=True)
     with sw_cols[1]:
         st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-radius:10px;padding:14px 18px;border-left:3px solid {weak_color};"><div style="font-size:11px;color:{BRAND["text_secondary"]};text-transform:uppercase;letter-spacing:1px;">Weakest Pillar — Priority Focus</div><div style="font-size:18px;font-weight:700;color:{weak_color};">{weakest_name} — {weakest_sc}%</div></div>', unsafe_allow_html=True)
+
+    # ── AI SHOPPING CHANNEL READINESS ─────────────────────────────────────
+    st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
+    st.markdown("### AI Shopping Channel Readiness")
+    st.markdown(
+        f'<div style="font-size:12px;color:{BRAND["text_secondary"]};margin:-4px 0 10px 0;">'
+        'Can each AI shopping channel discover and recommend your products? '
+        'Rolls up crawler access, JavaScript visibility, and structured data.</div>',
+        unsafe_allow_html=True,
+    )
+    _channel_rows = build_channel_readiness(audit)
+    _verdict_meta = {
+        "ready":   ("✅", BRAND["teal"],    "Ready"),
+        "partial": ("⚠️", BRAND["warning"], "Partial"),
+        "blocked": ("❌", BRAND["danger"],  "Blocked"),
+    }
+    for _row in _channel_rows:
+        _icon, _vcolor, _vlabel = _verdict_meta.get(_row["verdict"], ("•", BRAND["text_secondary"], "?"))
+        _reasons_html = "".join(
+            f'<div style="font-size:12px;color:{BRAND["teal"] if _ok else BRAND["text_secondary"]};margin-top:2px;">'
+            f'{"✓" if _ok else "✗"} {_txt}</div>'
+            for _ok, _txt in _row["reasons"]
+        )
+        st.markdown(
+            f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};'
+            f'border-left:3px solid {_vcolor};border-radius:10px;padding:12px 16px;margin-bottom:8px;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+            f'<div style="font-size:15px;font-weight:700;color:{BRAND["white"]};">{_row["channel"]}</div>'
+            f'<div style="font-size:13px;font-weight:700;color:{_vcolor};">{_icon} {_vlabel}</div></div>'
+            f'<div style="font-size:11px;color:{BRAND["text_secondary"]};margin-top:2px;">{_row["checkout"]}</div>'
+            f'{_reasons_html}</div>',
+            unsafe_allow_html=True,
+        )
+    st.caption(
+        "Channel availability and eligibility (e.g. US-buyer requirements, Shopify Catalog enrolment, "
+        "store-policy completeness) are set in your commerce platform — this audit reflects only what's "
+        "observable from your site."
+    )
 
     # ── PER-PAGE SUMMARY TABLE ────────────────────────────────────────────
     st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
@@ -954,13 +993,39 @@ def render_results(audit: dict, get_secret_fn) -> None:
                 st.markdown(f'<div style="background:{BRAND["bg_card"]};border:1px solid {BRAND["border"]};border-left:3px solid {BRAND["primary"]};border-radius:0 10px 10px 0;padding:14px 18px;color:{BRAND["white"]};font-size:13px;line-height:1.7;white-space:pre-wrap;">{sem_ai}</div>', unsafe_allow_html=True)
 
     # Well-known AI files (site-level)
-    st.markdown(f'<div style="margin:16px 0 8px 0;">{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="font-weight:600;color:{BRAND["white"]};">AI Policy Files:</span></div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="margin:16px 0 8px 0;">{brand_pill("SITE-LEVEL", BRAND["purple"])} <span style="font-weight:600;color:{BRAND["white"]};">AI Policy & Commerce Files:</span></div>', unsafe_allow_html=True)
     wellknown_result = llm_result.get("wellknown", {})
     for path, info in wellknown_result.items():
-        if info.get("found"):
+        _status = info.get("status", "")
+        if info.get("found") and info.get("valid_json") is not False:
             st.markdown(brand_status(f"Found: {path}", "success"), unsafe_allow_html=True)
+            # Spec-aware UCP detail — declared version and shopping capabilities
+            _ucp = info.get("ucp")
+            if _ucp and _ucp.get("valid"):
+                _bits = []
+                if _ucp.get("version"):
+                    _bits.append(f"version {_ucp['version']}" + ("" if _ucp.get("version_valid") else " ⚠️ not YYYY-MM-DD"))
+                _caps = _ucp.get("shopping_capabilities") or _ucp.get("capabilities") or []
+                if _caps:
+                    _bits.append("capabilities: " + ", ".join(_caps[:4]))
+                if _ucp.get("has_payment_handlers"):
+                    _bits.append("payment handlers declared")
+                if _bits:
+                    st.caption("UCP profile — " + " · ".join(_bits))
         else:
-            st.caption(f"— {path} not found")
+            _label = path
+            if _status == "deprecated":
+                _label += " — deprecated standard, not expected"
+            st.caption(f"— {_label} not found")
+
+    # ACP (OpenAI/Stripe) — informational only. No standardized discovery path
+    # exists yet (the spec explicitly says discovery is still being defined and
+    # participation is application-based), so we don't probe for it.
+    st.caption(
+        "ℹ️ Agentic Commerce Protocol (ACP, OpenAI/Stripe) — powers ChatGPT Instant Checkout, "
+        "currently in beta with no public discovery endpoint; enrolment is application-based, "
+        "so it isn't probed here."
+    )
 
     # ══════════════════════════════════════════════════════════════════════
     # SECURITY DRILLDOWN
@@ -1091,8 +1156,8 @@ def render_results(audit: dict, get_secret_fn) -> None:
                     "llm_discoverability": {
                         "has_llm_txt": llm_result.get("score", 0) > 25,
                         "ai_info_found": bool(llm_result.get("ai_info_page", {}).get("found")),
-                        "has_ucp": bool(llm_result.get("wellknown", {}).get("has_ucp")),
-                        "has_mcp": bool(llm_result.get("wellknown", {}).get("has_mcp")),
+                        "has_ucp": bool(llm_result.get("wellknown", {}).get("/.well-known/ucp", {}).get("found")),
+                        "has_mcp": bool(llm_result.get("wellknown", {}).get("/.well-known/mcp.json", {}).get("found")),
                     },
                     "semantic_summary": {
                         "has_lead_paragraph": False,

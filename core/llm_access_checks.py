@@ -124,6 +124,61 @@ def looks_like_soft_404(html: str) -> bool:
     return any(sig in haystack for sig in SOFT_404_SIGNATURES)
 
 
+def _ucp_entity_names(entities) -> list:
+    """Extract capability/service names from a UCP `capabilities`/`services`
+    block. The spec uses a map keyed by reverse-domain name; reference samples
+    sometimes use an array of objects with `name`/`id`. Handle both."""
+    if isinstance(entities, dict):
+        return list(entities.keys())
+    if isinstance(entities, list):
+        return [e.get("name") or e.get("id") for e in entities
+                if isinstance(e, dict) and (e.get("name") or e.get("id"))]
+    return []
+
+
+def parse_ucp_profile(text: str) -> dict:
+    """Parse a /.well-known/ucp profile body and extract spec-relevant signals.
+
+    The profile is JSON with a top-level `ucp` object carrying `version`
+    (YYYY-MM-DD), `services`, and `capabilities` (reverse-domain names such as
+    dev.ucp.shopping.checkout). Placement of payment handlers and signing keys
+    varies across the spec and the official reference samples, so we check the
+    known locations:
+      - signing_keys: top-level (spec example + server sample), fallback ucp.*
+      - payment_handlers: top-level (client sample), ucp.payment_handlers (spec),
+        or payment.handlers (server sample)
+    Returns a findings dict; `valid` is False when the body is not a usable UCP
+    profile (so a bare 200 of unrelated JSON doesn't count)."""
+    out = {"valid": False, "version": None, "version_valid": False,
+           "capabilities": [], "shopping_capabilities": [], "services": [],
+           "has_payment_handlers": False, "has_signing_keys": False}
+    try:
+        data = json.loads(text)
+    except Exception:
+        return out
+    if not isinstance(data, dict):
+        return out
+    ucp = data.get("ucp")
+    if not isinstance(ucp, dict):
+        return out
+    out["valid"] = True
+    ver = ucp.get("version")
+    if isinstance(ver, str):
+        out["version"] = ver
+        out["version_valid"] = bool(re.match(r'^\d{4}-\d{2}-\d{2}$', ver))
+    caps = _ucp_entity_names(ucp.get("capabilities"))
+    out["capabilities"] = caps
+    out["shopping_capabilities"] = [c for c in caps if c and ".shopping." in c]
+    out["services"] = _ucp_entity_names(ucp.get("services"))
+    out["has_payment_handlers"] = bool(
+        ucp.get("payment_handlers")
+        or data.get("payment_handlers")
+        or (isinstance(data.get("payment"), dict) and data["payment"].get("handlers"))
+    )
+    out["has_signing_keys"] = bool(data.get("signing_keys") or ucp.get("signing_keys"))
+    return out
+
+
 # ─── GRADE THRESHOLDS ─────────────────────────────────────────────────────────
 GRADE_THRESHOLDS = [
     (85, "A", "Excellent"),
@@ -1558,7 +1613,7 @@ def check_schema_meta(url, page_type="general"):
     # Legal pages (trust signal)
     links_href = [a.get("href", "").lower() for a in links]
     links_text_list = [a.get_text(strip=True).lower() for a in links]
-    found_legal = [k for k in ["privacy", "terms", "returns", "shipping"]
+    found_legal = [k for k in ["privacy", "terms", "returns", "refund", "shipping"]
                    if any(k in l for l in links_href) or any(k in t for t in links_text_list)]
     if len(found_legal) >= 3:
         sb.add(0, f"Trust pages present: {', '.join(found_legal)} — policy transparency signal", "trust")
@@ -1607,6 +1662,47 @@ def check_schema_meta(url, page_type="general"):
         elif not schema_price and price_in_html:
             sb.add(0, "Price visible in HTML but not in schema — add price to Offer schema for AI shopping agents", "ecommerce")
 
+    # ── Agentic checkout readiness ────────────────────────────────────────────
+    # Fields an AI agent needs to *transact*, not just discover — aligned with
+    # UCP/ACP agentic checkout and Shopify's product listing-quality rubric
+    # (availability, current price, variants/options). Scored modestly; shipping
+    # and variants are informational here to avoid double-counting Offer field
+    # completeness, which already weighs shippingDetails.
+    _offer_data = next((s["data"] for s in offer_schemas if s["data"]), {})
+    _prod_data  = next((s["data"] for s in product_schemas if s["data"]), {})
+    _avail_raw  = str(_offer_data.get("availability", "")).lower()
+    has_availability = bool(_avail_raw)
+    valid_availability = any(k in _avail_raw for k in (
+        "instock", "outofstock", "preorder", "backorder", "soldout",
+        "discontinued", "limitedavailability", "onlineonly", "instoreonly"))
+    has_price_valid_until = bool(_offer_data.get("priceValidUntil"))
+    has_variants = ("ProductGroup" in type_set
+                    or any("hasVariant" in s["data"] for s in product_schemas if s["data"]))
+    return_days = next((s["data"].get("merchantReturnDays") for s in schemas
+                        if "MerchantReturnPolicy" in s["type"] and s["data"].get("merchantReturnDays")), None)
+    agentic_checkout = {
+        "has_availability": has_availability, "valid_availability": valid_availability,
+        "has_price_valid_until": has_price_valid_until, "has_variants": has_variants,
+        "has_shipping_details": has_shipping, "merchant_return_days": return_days,
+    }
+    if is_product_page:
+        if has_availability and valid_availability:
+            sb.add(2, "Offer availability uses a valid schema.org value — agents can confirm stock before recommending checkout", "agentic_checkout")
+        elif offer_schemas and not has_availability:
+            sb.deduct(2, "Offer schema has no availability — AI agents can't confirm stock before recommending checkout", "agentic_checkout")
+        elif has_availability and not valid_availability:
+            sb.add(0, f"Offer availability '{_avail_raw[:40]}' isn't a recognised schema.org value — use https://schema.org/InStock etc.", "agentic_checkout")
+
+        if has_price_valid_until:
+            sb.add(2, "Offer has priceValidUntil — agents trust the price is current for agentic checkout", "agentic_checkout")
+        else:
+            sb.add(0, "No priceValidUntil on Offer — add it so AI agents trust the price won't be stale at checkout", "agentic_checkout")
+
+        if has_variants:
+            sb.add(0, "Product variants exposed (ProductGroup/hasVariant) — agents can match size/colour/style to buyer intent", "agentic_checkout")
+        else:
+            sb.add(0, "No variant schema (ProductGroup/hasVariant) — if this product has options, expose them so agents can match buyer intent", "agentic_checkout")
+
     result = sb.to_dict()
     result.update({
         "schema": {
@@ -1632,7 +1728,8 @@ def check_schema_meta(url, page_type="general"):
         "ecommerce": {"is_product_page": is_product_page, "has_gtin_or_mpn": has_gtin, "has_sku": has_sku,
                       "has_return_policy_schema": has_return_policy, "has_shipping_schema": has_shipping,
                       "schema_price": schema_price, "price_in_html": price_in_html,
-                      "review_schema_depth": has_review, "product_schema_count": len(product_schemas)},
+                      "review_schema_depth": has_review, "product_schema_count": len(product_schemas),
+                      "agentic_checkout": agentic_checkout},
         "error": None,
     })
     return result
@@ -1668,8 +1765,11 @@ def check_llm_discoverability(base_url, homepage_html):
     sb = ScoreBuilder("AI Discoverability", max_score=100)
     raw_data = {"llm_txt": {}, "ai_info_page": {}, "wellknown": {}}
 
-    # ── 1. llm.txt variants ───────────────────────────────────────────────────
-    llm_paths = ["/llm.txt", "/llms.txt", "/llms-full.txt", "/.well-known/llm.txt"]
+    # ── 1. Agent discovery files (agents.md / llms.txt variants) ──────────────
+    # /agents.md is the canonical agent-discovery URL (Shopify's source of truth);
+    # /llms.txt + /llms-full.txt are the widely-adopted standard, and /llm.txt is a
+    # common non-standard variant. Ordered so the canonical/standard file wins.
+    llm_paths = ["/agents.md", "/llms.txt", "/llms-full.txt", "/llm.txt", "/.well-known/llm.txt"]
     llm_found = None
     for path in llm_paths:
         u = urljoin(base_url, path)
@@ -1697,12 +1797,15 @@ def check_llm_discoverability(base_url, homepage_html):
         raw_data["llm_txt"][path] = {"found": found, "url": u, "content": content, "quality": quality}
 
     if llm_found:
-        sb.add(30, f"llm.txt found at {llm_found['path']} — AI agents have explicit guidance about your site", "llm_txt")
+        _disc_name = llm_found["path"].lstrip("/")
+        sb.add(30, f"Agent discovery file found at {llm_found['path']} — AI agents have explicit guidance about your site", "llm_txt")
+        if llm_found["path"] == "/agents.md":
+            sb.add(0, "Using /agents.md — the canonical agent-discovery URL (source of truth for AI agents)", "llm_txt_quality")
         q = llm_found["quality"]
         if q.get("has_title"):
-            sb.add(5, "llm.txt has a title — clear brand identification for AI agents", "llm_txt_quality")
+            sb.add(5, f"{_disc_name} has a title — clear brand identification for AI agents", "llm_txt_quality")
         else:
-            sb.add(0, "llm.txt lacks a title — add # BrandName at the top", "llm_txt_quality")
+            sb.add(0, f"{_disc_name} lacks a title — add # BrandName at the top", "llm_txt_quality")
         if q.get("has_description"):
             sb.add(5, "llm.txt has a description — context for AI about what your brand does", "llm_txt_quality")
         if q.get("has_links"):
@@ -1712,7 +1815,7 @@ def check_llm_discoverability(base_url, homepage_html):
         if q.get("has_sections"):
             sb.add(5, "llm.txt is well-structured with multiple sections", "llm_txt_quality")
     else:
-        sb.add(0, "No llm.txt found at any standard path — AI crawlers can't receive explicit site guidance", "llm_txt")
+        sb.add(0, "No agent discovery file found (checked /agents.md, /llms.txt, /llms-full.txt) — AI crawlers can't receive explicit site guidance", "llm_txt")
 
     # ── 2. AI Info Page ───────────────────────────────────────────────────────
     ai_paths = ["/ai-info", "/llm-info", "/ai-information", "/llm-information",
@@ -1814,7 +1917,12 @@ def check_llm_discoverability(base_url, homepage_html):
         "/.well-known/ucp": {
             "description": "Universal Commerce Protocol — allows AI shopping agents to discover checkout capabilities",
             "status": "emerging",
-            "note": "Jan 2026 launch. Shopify, Walmart, Target adopters. Consider for future.",
+            "note": "Backed by Shopify, Google, Amazon, Visa, Mastercard. Powers AI-agent checkout across ChatGPT, Microsoft Copilot, and Google AI Mode/Gemini.",
+        },
+        "/.well-known/agent-card.json": {
+            "description": "A2A Agent Card — Agent-to-Agent discovery entry point; pairs with the UCP profile's a2a service binding",
+            "status": "emerging",
+            "note": "Declares an agent's capabilities for A2A transport. Referenced by /.well-known/ucp when a2a is offered.",
         },
         "/.well-known/mcp.json": {
             "description": "WebMCP — enables web apps to expose tools to AI agents (Microsoft/Google spec, Aug 2025)",
@@ -1835,32 +1943,163 @@ def check_llm_discoverability(base_url, homepage_html):
     for path, meta in wellknown_checks.items():
         u = urljoin(base_url, path)
         r, e = fetch(u, timeout=6)
-        found = False; valid = None
+        found = False; valid = None; ucp_detail = None
         # Reject a redirect away from the requested path (e.g. a catch-all that
         # 200s everything) — otherwise every site would "have" these files.
+        # The UCP spec also mandates profiles MUST NOT redirect, so this is
+        # spec-correct for /.well-known/ucp specifically.
         if r and r.status_code == 200 and not redirected_away(r, path):
             text = r.text.strip()
             if text and not text.startswith(("<!DOCTYPE", "<html")):
                 found = True
                 try: json.loads(text); valid = True
                 except: valid = False
+        # Spec-aware UCP validation: a 200 of unrelated JSON isn't a real UCP
+        # profile — require a top-level `ucp` object with capabilities/version.
+        if path == "/.well-known/ucp" and found:
+            ucp_detail = parse_ucp_profile(r.text)
+            if not ucp_detail.get("valid"):
+                valid = False
         # Emerging/niche standards earn +2 only if found AND valid JSON — these
         # are JSON manifests, so a non-JSON body (e.g. a plaintext soft-404) is
         # not a real implementation. Deprecated standards earn 0.
         pts = 0
         if found and valid and meta["status"] in ("emerging", "niche"):
             pts = 2
-            sb.add(2, f"{path} found — early adopter of {meta['description'].split('—')[0].strip()}", "wellknown")
+            if path == "/.well-known/ucp" and ucp_detail:
+                _caps = ucp_detail.get("shopping_capabilities") or ucp_detail.get("capabilities") or []
+                _vernote = f" (v{ucp_detail['version']})" if ucp_detail.get("version_valid") else ""
+                _capnote = f" — declares {', '.join(_caps[:3])}" if _caps else ""
+                sb.add(2, f"UCP profile found at {path}{_vernote} — AI shopping agents can discover your checkout capabilities{_capnote}", "wellknown")
+            else:
+                sb.add(2, f"{path} found — early adopter of {meta['description'].split('—')[0].strip()}", "wellknown")
         raw_data["wellknown"][path] = {
             "found": found, "url": u, "valid_json": valid,
             "description": meta["description"], "status": meta["status"],
             "note": meta["note"],
             "score_contribution": pts,
+            "ucp": ucp_detail,  # spec-aware UCP detail (None for non-UCP paths)
         }
 
     result = sb.to_dict()
     result.update(raw_data)
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI SHOPPING CHANNEL READINESS
+# Rolls existing pillar data (bot access, JS visibility, schema) up into a
+# per-platform "can this AI channel sell your products?" verdict. Pure reporting
+# over data already collected — no new network calls.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+AI_SHOPPING_CHANNELS = {
+    "ChatGPT": {
+        "bots": ["GPTBot", "OAI-SearchBot", "ChatGPT-User"],
+        "checkout": "Referral — buyer completes checkout on your store (in-app browser / new tab)",
+        "direct_checkout": False,
+    },
+    "Microsoft Copilot": {
+        "bots": ["Bingbot"],
+        "checkout": "Direct in-conversation checkout (UCP)",
+        "direct_checkout": True,
+    },
+    "Google AI Mode & Gemini": {
+        "bots": ["Googlebot", "Google-Extended", "Gemini-Deep-Research"],
+        "checkout": "Direct in-conversation checkout (UCP)",
+        "direct_checkout": True,
+    },
+    "Perplexity": {
+        "bots": ["PerplexityBot", "Perplexity-User"],
+        "checkout": "Referral — buyer completes checkout on your store",
+        "direct_checkout": False,
+    },
+}
+
+_HARD_BLOCK_STATUS = (401, 403, 429, 503)
+
+
+def build_channel_readiness(audit: dict) -> list:
+    """Per-AI-shopping-channel readiness verdict from already-collected pillar
+    data. Returns a list of dicts: {channel, verdict, checkout, reasons, bots}.
+
+    verdict ∈ {"ready","partial","blocked"}:
+      blocked — a channel bot is disallowed in robots.txt, hard-blocked on the
+                live crawl, or caught by Cloudflare bot protection.
+      partial — bots can reach the site, but content is largely JS-hidden or the
+                site has no structured data for agents to rank/recommend.
+      ready   — bots allowed, content visible, structured data present.
+    """
+    robots = audit.get("robots_result", {}) or {}
+    ai_results = (robots.get("robots", {}) or {}).get("ai_results", {}) or {}
+    cf_blocked = set((robots.get("cloudflare", {}) or {}).get("blocked_bots", []) or [])
+    bot_crawl = audit.get("bot_crawl_results", {}) or {}
+
+    # Site-wide JS visibility: worst gap_severity across pages that had a JS
+    # comparison. None when no JS-render API was available (can't assess).
+    gaps = [c["gap_severity"] for r in (audit.get("js_results", {}) or {}).values()
+            if (c := (r or {}).get("comparison"))]
+    worst_gap = max(gaps) if gaps else None
+    content_hidden = worst_gap is not None and worst_gap > 0.5
+
+    # Structured-data presence across audited pages.
+    schema_pages = [r for r in (audit.get("schema_results", {}) or {}).values() if not (r or {}).get("error")]
+    has_schema = any((r.get("schema", {}) or {}).get("count", 0) > 0 for r in schema_pages)
+    has_product_schema = any((r.get("ecommerce", {}) or {}).get("is_product_page") for r in schema_pages)
+
+    out = []
+    for channel, cfg in AI_SHOPPING_CHANNELS.items():
+        reasons = []
+        bots_status = {}
+        explicitly_blocked = []
+        hard_blocked = []
+        cf_hit = []
+        for bot in cfg["bots"]:
+            robots_allowed = ai_results.get(bot, {}).get("allowed")  # True/False/None
+            live = bot_crawl.get(bot, {})
+            live_status = live.get("status")
+            state = "ok"
+            if robots_allowed is False:
+                explicitly_blocked.append(bot); state = "robots-blocked"
+            if bot in cf_blocked or live.get("cloudflare_blocked"):
+                cf_hit.append(bot); state = "cloudflare-blocked"
+            if live_status in _HARD_BLOCK_STATUS:
+                hard_blocked.append(bot); state = f"http-{live_status}"
+            bots_status[bot] = state
+
+        verdict = "ready"
+        if explicitly_blocked or hard_blocked or cf_hit:
+            verdict = "blocked"
+            if cf_hit:
+                reasons.append((False, f"Cloudflare bot protection is blocking {', '.join(cf_hit)}"))
+            if explicitly_blocked:
+                reasons.append((False, f"robots.txt disallows {', '.join(explicitly_blocked)}"))
+            if hard_blocked:
+                reasons.append((False, f"Live crawl hard-blocked ({', '.join(hard_blocked)})"))
+        else:
+            reasons.append((True, f"Crawler access open for {', '.join(cfg['bots'])}"))
+            if content_hidden:
+                verdict = "partial"
+                reasons.append((False, f"~{round(worst_gap*100)}% of key content is JS-hidden — agents see a near-empty page"))
+            elif worst_gap is not None:
+                reasons.append((True, "Content visible to crawlers without JavaScript"))
+            if not has_schema:
+                verdict = "partial"
+                reasons.append((False, "No structured data found — agents can't reliably rank/recommend your products"))
+            elif has_product_schema:
+                reasons.append((True, "Product structured data present for agent ranking"))
+            elif has_schema:
+                reasons.append((True, "Structured data present"))
+
+        out.append({
+            "channel": channel,
+            "verdict": verdict,
+            "checkout": cfg["checkout"],
+            "direct_checkout": cfg["direct_checkout"],
+            "reasons": reasons,
+            "bots": bots_status,
+        })
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
