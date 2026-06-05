@@ -574,7 +574,13 @@ def render_results(audit: dict, get_secret_fn) -> None:
                 # Fallback display when no JS rendering API available
                 if js_err:
                     st.markdown(brand_status(f"JS rendering not available: {js_err}", "info"), unsafe_allow_html=True)
-                    st.caption("Configure API keys in Streamlit Secrets for full HTML vs JS comparison.")
+                    # Only tell the user to add keys when keys are actually
+                    # missing; if configured providers failed, the message above
+                    # already explains why, so point them at the provider instead.
+                    if "No JS rendering API key configured" in js_err:
+                        st.caption("Configure API keys in Streamlit Secrets for full HTML vs JS comparison.")
+                    else:
+                        st.caption("All configured render providers failed for this page — check provider credits/credentials, then retry.")
 
                 if js_r["risk_factors"]:
                     st.markdown("**Risk Factors (estimated from HTML analysis):**")
