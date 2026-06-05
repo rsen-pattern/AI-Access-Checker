@@ -88,6 +88,42 @@ def detect_soft_block(html: str, title: str = "") -> tuple[bool, str]:
     return False, ""
 
 
+# Title / leading-body phrases that betray a soft-404 — a page served with
+# HTTP 200 that doesn't actually exist. Kept deliberately specific (and only
+# matched against the <title> and the first ~300 chars of visible text) so we
+# don't reject real pages that merely mention these words deeper in the body.
+SOFT_404_SIGNATURES = [
+    "404", "not found", "page doesn't exist", "page does not exist",
+    "page cannot be found", "page can't be found", "no longer exists",
+    "no longer available", "page you requested", "page you are looking for",
+    "page you're looking for", "couldn't find that page", "could not find that page",
+]
+
+
+def redirected_away(resp, requested_path: str) -> bool:
+    """True if `resp` followed a redirect to a URL that no longer ends in the
+    requested path — i.e. the path doesn't exist and the server bounced us to a
+    homepage or catch-all (e.g. /ai-info → /). False when there was no redirect
+    or the final URL still matches the requested path."""
+    if resp is None or not resp.history:
+        return False
+    final_path = (resp.url or "").split("?")[0].rstrip("/")
+    return not final_path.endswith(requested_path.rstrip("/"))
+
+
+def looks_like_soft_404(html: str) -> bool:
+    """Detect a soft-404: HTTP 200 whose <title> or leading visible text says
+    the page doesn't exist. Inspects only the title and first 300 chars of
+    extracted text (ignoring <head> scripts/meta) to keep false positives low."""
+    if not html:
+        return False
+    soup = BeautifulSoup(html, "html.parser")
+    title = soup.title.get_text(strip=True).lower() if soup.title else ""
+    body_lead = soup.get_text(separator=" ", strip=True)[:300].lower()
+    haystack = title + " " + body_lead
+    return any(sig in haystack for sig in SOFT_404_SIGNATURES)
+
+
 # ─── GRADE THRESHOLDS ─────────────────────────────────────────────────────────
 GRADE_THRESHOLDS = [
     (85, "A", "Excellent"),
@@ -481,17 +517,50 @@ def detect_cms(html, url=""):
 #   gap_severity = Σ(1.0 × missing + 0.5 × warn) / total_numeric_metrics
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _validate_rendered_html(text):
+    """Validate a provider's rendered body before accepting it as success.
+
+    A provider can return HTTP 200 with a CAPTCHA / bot-challenge page that
+    looks like real HTML — accepting it would stop the cascade on junk. Returns
+    (ok, reason); `reason` is a short failure description when ok is False so
+    the caller can fall through to the next provider and report why.
+    """
+    if not (text and len(text) > 200 and text.lstrip().startswith("<")):
+        return False, "empty or non-HTML response"
+    blocked, sig = detect_soft_block(text)
+    if blocked:
+        return False, f"soft-block / challenge page ({sig})"
+    return True, ""
+
+
 def fetch_js_rendered(url, get_secret):
-    """Cascading JS render: ScrapingBee → Scrapfly → Browserless."""
+    """Cascading JS render: ScrapingBee → Scrapfly → Browserless.
+
+    Falls through to the next provider on ANY failure — exception, non-200,
+    non-HTML body, or a soft-block / challenge page — so one provider returning
+    junk doesn't masquerade as a successful render. Returns
+    (html, provider_name, error). On failure `error` distinguishes "no keys
+    configured" from "all configured providers failed" and lists what was
+    tried, so the caller can surface an accurate diagnostic instead of always
+    blaming missing keys.
+    """
+    attempts = []  # (provider, reason) for each configured provider that failed
+
     key = get_secret("SCRAPINGBEE_API_KEY", "")
     if key:
         try:
             r = requests.get("https://app.scrapingbee.com/api/v1/",
                 params={"api_key": key, "url": url, "render_js": "true", "premium_proxy": "false"},
                 timeout=45)
-            if r.status_code == 200 and len(r.text) > 200 and r.text.lstrip().startswith("<"):
-                return r.text, "ScrapingBee", None
-        except Exception: pass
+            if r.status_code == 200:
+                ok, why = _validate_rendered_html(r.text)
+                if ok:
+                    return r.text, "ScrapingBee", None
+                attempts.append(("ScrapingBee", why))
+            else:
+                attempts.append(("ScrapingBee", f"HTTP {r.status_code}"))
+        except Exception as e:
+            attempts.append(("ScrapingBee", f"{type(e).__name__}: {e}"))
 
     key = get_secret("SCRAPFLY_API_KEY", "")
     if key:
@@ -500,19 +569,35 @@ def fetch_js_rendered(url, get_secret):
                 params={"key": key, "url": url, "render_js": "true", "asp": "false"}, timeout=45)
             if r.status_code == 200:
                 html = r.json().get("result", {}).get("content", "")
-                if html and len(html) > 200 and html.lstrip().startswith("<"): return html, "Scrapfly", None
-        except Exception: pass
+                ok, why = _validate_rendered_html(html)
+                if ok:
+                    return html, "Scrapfly", None
+                attempts.append(("Scrapfly", why))
+            else:
+                attempts.append(("Scrapfly", f"HTTP {r.status_code}"))
+        except Exception as e:
+            attempts.append(("Scrapfly", f"{type(e).__name__}: {e}"))
 
     key = get_secret("BROWSERLESS_API_KEY", "")
     if key:
         try:
             r = requests.post(f"https://chrome.browserless.io/content?token={key}",
                 json={"url": url, "waitFor": 3000}, timeout=45)
-            if r.status_code == 200 and len(r.text) > 200 and r.text.lstrip().startswith("<"):
-                return r.text, "Browserless", None
-        except Exception: pass
+            if r.status_code == 200:
+                ok, why = _validate_rendered_html(r.text)
+                if ok:
+                    return r.text, "Browserless", None
+                attempts.append(("Browserless", why))
+            else:
+                attempts.append(("Browserless", f"HTTP {r.status_code}"))
+        except Exception as e:
+            attempts.append(("Browserless", f"{type(e).__name__}: {e}"))
 
-    return None, None, "No JS rendering API key configured. Add SCRAPINGBEE_API_KEY, SCRAPFLY_API_KEY, or BROWSERLESS_API_KEY."
+    if not attempts:
+        return None, None, ("No JS rendering API key configured. Add SCRAPINGBEE_API_KEY, "
+                            "SCRAPFLY_API_KEY, or BROWSERLESS_API_KEY.")
+    detail = "; ".join(f"{name} — {reason}" for name, reason in attempts)
+    return None, None, f"All configured JS render providers failed ({detail})."
 
 
 def analyse_html_content(html):
@@ -1590,7 +1675,9 @@ def check_llm_discoverability(base_url, homepage_html):
         u = urljoin(base_url, path)
         r, e = fetch(u, timeout=10)
         found = False; content = ""; quality = {}
-        if r and r.status_code == 200:
+        # Reject a redirect away from the requested path (e.g. /llm.txt → / or
+        # → /llms.txt) so a redirect doesn't count as a real file at this path.
+        if r and r.status_code == 200 and not redirected_away(r, path):
             text = r.text.strip()
             if len(text) > 10 and not text.startswith(("<!DOCTYPE", "<html")):
                 found = True
@@ -1635,17 +1722,14 @@ def check_llm_discoverability(base_url, homepage_html):
         u = urljoin(base_url, path)
         r, e = fetch(u, timeout=10)
         if r and r.status_code == 200:
-            # Reject if the server redirected us away from the intended path.
-            # requests follows redirects by default, so r.url is the final URL.
-            # If it no longer contains the path we requested, the page doesn't
-            # exist — it just redirected to the homepage or a catch-all.
-            if r.history:
-                final_path = r.url.split("?")[0].rstrip("/")
-                expected_path = u.split("?")[0].rstrip("/")
-                if not final_path.endswith(path.rstrip("/")):
-                    continue  # redirected away — not a real AI info page
+            # A page only counts as real if it wasn't redirected away (e.g.
+            # /ai-info → homepage / catch-all) AND isn't a soft-404 (a custom
+            # "page not found" served with HTTP 200 and no redirect — the most
+            # common false positive for sites without an AI info page).
+            if redirected_away(r, path) or looks_like_soft_404(r.text):
+                continue
             text = r.text.strip()
-            if len(text) > 500 and "404" not in text[:200].lower():
+            if len(text) > 500:
                 ai_page_found = {"url": u, "path": path}
                 break
 
@@ -1670,21 +1754,26 @@ def check_llm_discoverability(base_url, homepage_html):
                "linked_from_footer": ai_linked_footer}
 
     if ai_page_found:
-        sb.add(20, f"AI Info Page found at {ai_page_found['path']} — brand controls its AI narrative", "ai_info_page")
         r, e = fetch(ai_page_found["url"])
-        # Guard against footer-discovered URLs that redirect (e.g. /ai-info → homepage).
-        if r and r.history:
-            final = r.url.split("?")[0].rstrip("/")
-            expected_suffix = ai_page_found["path"].rstrip("/")
-            if not final.endswith(expected_suffix):
-                # Page redirects away — treat as not found.
-                ai_info["found"] = False
-                ai_info["url"] = None
-                ai_info["redirects"] = True
-                sb.add(0, "No AI Info Page found — quick win: create /ai-info page describing your brand for AI agents", "ai_info_page")
-                raw_data["ai_info_page"] = ai_info
-                # Skip quality scoring for this page
-                r = None
+        # Validate the page actually exists before awarding any points. Pages
+        # discovered via footer links (or paths revisited here) can redirect to
+        # the homepage or return a soft-404 — in either case there is no real AI
+        # info page, so we must not award the +20 (the previous code added +20
+        # and then +0 to the same pillar, netting +20 for a missing page).
+        _page_real = (
+            r is not None and r.status_code == 200
+            and not redirected_away(r, ai_page_found["path"])
+            and not looks_like_soft_404(r.text)
+        )
+        if not _page_real:
+            ai_info["found"] = False
+            ai_info["url"] = None
+            ai_info["redirects"] = bool(r is not None and r.history)
+            sb.add(0, "No AI Info Page found — quick win: create /ai-info page describing your brand for AI agents", "ai_info_page")
+            raw_data["ai_info_page"] = ai_info
+            r = None  # skip quality scoring below
+        else:
+            sb.add(20, f"AI Info Page found at {ai_page_found['path']} — brand controls its AI narrative", "ai_info_page")
         if r and r.status_code == 200:
             ai_soup = BeautifulSoup(r.text, "html.parser")
             ai_text = ai_soup.get_text(separator=" ", strip=True)
@@ -1747,15 +1836,19 @@ def check_llm_discoverability(base_url, homepage_html):
         u = urljoin(base_url, path)
         r, e = fetch(u, timeout=6)
         found = False; valid = None
-        if r and r.status_code == 200:
+        # Reject a redirect away from the requested path (e.g. a catch-all that
+        # 200s everything) — otherwise every site would "have" these files.
+        if r and r.status_code == 200 and not redirected_away(r, path):
             text = r.text.strip()
             if text and not text.startswith(("<!DOCTYPE", "<html")):
                 found = True
                 try: json.loads(text); valid = True
                 except: valid = False
-        # Emerging/niche standards earn +2 if found+valid; deprecated earn 0
+        # Emerging/niche standards earn +2 only if found AND valid JSON — these
+        # are JSON manifests, so a non-JSON body (e.g. a plaintext soft-404) is
+        # not a real implementation. Deprecated standards earn 0.
         pts = 0
-        if found and meta["status"] in ("emerging", "niche"):
+        if found and valid and meta["status"] in ("emerging", "niche"):
             pts = 2
             sb.add(2, f"{path} found — early adopter of {meta['description'].split('—')[0].strip()}", "wellknown")
         raw_data["wellknown"][path] = {
