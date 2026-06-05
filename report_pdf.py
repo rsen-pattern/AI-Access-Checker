@@ -1132,6 +1132,29 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
     story.append(sw_table)
     story.append(_sp(12))
 
+    # ── 3b. AI SHOPPING CHANNEL READINESS ────────────────────────────────────
+    from core.llm_access_checks import build_channel_readiness as _build_channel_readiness
+    _channel_rows = _build_channel_readiness(audit)
+    if _channel_rows:
+        story.append(Paragraph("AI Shopping Channel Readiness", _S_H3()))
+        story.append(Paragraph(
+            "Can each AI shopping channel discover and recommend your products? "
+            "Combines crawler access, JavaScript visibility, and structured data.",
+            _S_MUTED()))
+        story.append(_sp(4))
+        _verdict_kind  = {"ready": "success", "partial": "warning", "blocked": "danger"}
+        _verdict_label = {"ready": "READY", "partial": "PARTIAL", "blocked": "BLOCKED"}
+        for _row in _channel_rows:
+            story.append(_status_dot(
+                f"<b>{_row['channel']}</b> — {_verdict_label.get(_row['verdict'], '?')}",
+                _verdict_kind.get(_row["verdict"], "info")))
+            _reason_txt = " · ".join(t for _, t in _row["reasons"])
+            if _reason_txt:
+                story.append(Paragraph(
+                    f'<font color="#{C_MUTED.hexval()[2:]}" size="8">{_row["checkout"]} — {_reason_txt}</font>',
+                    _S_BODY()))
+        story.append(_sp(12))
+
     # ── 4. ANTI-BOT / CLOUDFLARE CALLOUT ─────────────────────────────────────
     cf = robots_result.get("cloudflare", {}) if isinstance(robots_result, dict) else {}
     if cf.get("bot_fight_mode_likely"):
@@ -1514,6 +1537,23 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
                 f"Publication date: {'Found' if entity_data.get('has_date_published') else 'Missing'}",
                 "success" if entity_data.get("has_date_published") else "warning"))
 
+        # Agentic checkout readiness (product pages) — fields an AI agent needs
+        # to transact, not just discover.
+        ecom = sr.get("ecommerce", {}) or {}
+        if ecom.get("is_product_page"):
+            ac = ecom.get("agentic_checkout", {}) or {}
+            _avail_ok = ac.get("has_availability") and ac.get("valid_availability")
+            story.append(_status_dot(
+                f"Availability (schema.org enum): {'Valid' if _avail_ok else 'Missing/invalid'}",
+                "success" if _avail_ok else "warning"))
+            story.append(_status_dot(
+                f"priceValidUntil: {'Present' if ac.get('has_price_valid_until') else 'Missing'}",
+                "success" if ac.get("has_price_valid_until") else "warning"))
+            story.append(_status_dot(
+                f"Variants/options (ProductGroup/hasVariant): {'Exposed' if ac.get('has_variants') else 'Not exposed'}",
+                "success" if ac.get("has_variants") else "info",
+                muted=not ac.get("has_variants")))
+
         if not schema_data.get("schemas"):
             story.append(_status_dot("No Schema.org structured data found", "warning"))
 
@@ -1524,10 +1564,10 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
     # ─────────────────────────────────────────────────────────────────────────
     story.append(PageBreak())
     story.extend(_pillar_header(4, "AI Discoverability", llm_score))
-    story.append(Paragraph("Site-level · llm.txt files + AI Info Page", _S_MUTED()))
+    story.append(Paragraph("Site-level · agent discovery files + AI Info Page + well-known files", _S_MUTED()))
     story.append(_sp(4))
 
-    story.append(Paragraph("llm.txt Files:", _S_H3()))
+    story.append(Paragraph("Agent Discovery Files (agents.md / llms.txt):", _S_H3()))
     llm_txt_data = llm_result.get("llm_txt", llm_result.get("files", {}))
     any_found = False
     for path, info in (llm_txt_data or {}).items():
@@ -1535,6 +1575,8 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
             any_found = True
             q = info.get("quality", {})
             quality_bits = []
+            if path == "/agents.md":
+                quality_bits.append("canonical")
             if q.get("lines"):    quality_bits.append(f"{q['lines']} lines")
             if q.get("chars"):    quality_bits.append(f"{q['chars']:,} chars")
             quality_bits.append("links: yes" if q.get("has_links") else "links: no")
@@ -1544,7 +1586,7 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
         else:
             story.append(_status_dot(path, "info", muted=True))
     if not any_found:
-        story.append(_status_dot("No llm.txt files found at any standard path", "warning"))
+        story.append(_status_dot("No agent discovery file found (checked /agents.md, /llms.txt, /llms-full.txt)", "warning"))
 
     story.append(_sp(4))
     story.append(Paragraph("AI Info Page:", _S_H3()))
@@ -1566,12 +1608,27 @@ def generate_report_pdf(audit: dict, domain: str, recs: list) -> bytes:
     wellknown = llm_result.get("wellknown", {})
     if wellknown:
         story.append(_sp(4))
-        story.append(Paragraph("Well-Known AI Files:", _S_H3()))
+        story.append(Paragraph("Well-Known AI & Commerce Files:", _S_H3()))
         for path, info in wellknown.items():
-            kind = "success" if info.get("found") else "info"
-            story.append(_status_dot(
-                f"{path}{' (found)' if info.get('found') else ' (not found)'}",
-                kind, muted=not info.get("found")))
+            _real = info.get("found") and info.get("valid_json") is not False
+            kind = "success" if _real else "info"
+            label = f"{path}{' (found)' if _real else ' (not found)'}"
+            story.append(_status_dot(label, kind, muted=not _real))
+            # Spec-aware UCP detail — version + declared shopping capabilities
+            _ucp = info.get("ucp")
+            if _real and _ucp and _ucp.get("valid"):
+                _bits = []
+                if _ucp.get("version"):
+                    _bits.append(f"v{_ucp['version']}")
+                _caps = _ucp.get("shopping_capabilities") or _ucp.get("capabilities") or []
+                if _caps:
+                    _bits.append("caps: " + ", ".join(_caps[:3]))
+                if _ucp.get("has_payment_handlers"):
+                    _bits.append("payment handlers")
+                if _bits:
+                    story.append(Paragraph(
+                        f'<font color="#{C_MUTED.hexval()[2:]}" size="8">UCP profile — {" · ".join(_bits)}</font>',
+                        _S_BODY()))
 
     story.extend(_ai_block(bifrost_llm))
 

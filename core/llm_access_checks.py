@@ -1688,10 +1688,12 @@ def check_schema_meta(url, page_type="general"):
     if is_product_page:
         if has_availability and valid_availability:
             sb.add(2, "Offer availability uses a valid schema.org value — agents can confirm stock before recommending checkout", "agentic_checkout")
-        elif offer_schemas and not has_availability:
-            sb.deduct(2, "Offer schema has no availability — AI agents can't confirm stock before recommending checkout", "agentic_checkout")
         elif has_availability and not valid_availability:
             sb.add(0, f"Offer availability '{_avail_raw[:40]}' isn't a recognised schema.org value — use https://schema.org/InStock etc.", "agentic_checkout")
+        elif offer_schemas:
+            # No availability at all — already penalised via Offer field
+            # completeness, so flag informationally here to avoid double-counting.
+            sb.add(0, "Offer schema has no availability — AI agents can't confirm stock before recommending checkout", "agentic_checkout")
 
         if has_price_valid_until:
             sb.add(2, "Offer has priceValidUntil — agents trust the price is current for agentic checkout", "agentic_checkout")
@@ -1752,15 +1754,19 @@ def check_schema_meta(url, page_type="general"):
 
 def check_llm_discoverability(base_url, homepage_html):
     """
-    Pillar 4: llm.txt + AI Info Page + well-known files (informational only).
+    Pillar 4: agent discovery file (agents.md / llms.txt) + AI Info Page +
+    well-known files.
 
-    SCORING:  llm.txt = up to 50pts | AI Info Page = up to 42pts
-    Well-known files are displayed for future readiness but carry NO score weight.
+    SCORING:  discovery file = up to 50pts | AI Info Page = up to 42pts
+    Well-known files each contribute +2 (emerging/niche, found + valid) up to a
+    further ~8pts, filling the pillar ceiling toward 100.
 
     Notes on well-known files:
-    - ai-plugin.json: DEPRECATED by OpenAI April 2024 — shown with deprecation notice
-    - tdmrep.json: EU/academic publishers only, ~0.003% web adoption — informational
-    - UCP, mcp.json: Too early to mandate — shown as future readiness indicators
+    - ucp: spec-aware validation (top-level `ucp` object, version, shopping caps)
+    - agent-card.json: A2A discovery entry point; pairs with the UCP a2a binding
+    - mcp.json: WebMCP — emerging, monitored for adoption
+    - tdmrep.json: EU/academic publishers only, ~0.003% web adoption — niche
+    - ai-plugin.json: DEPRECATED by OpenAI April 2024 — 0 score weight
     """
     sb = ScoreBuilder("AI Discoverability", max_score=100)
     raw_data = {"llm_txt": {}, "ai_info_page": {}, "wellknown": {}}
@@ -2037,8 +2043,11 @@ def build_channel_readiness(audit: dict) -> list:
 
     # Site-wide JS visibility: worst gap_severity across pages that had a JS
     # comparison. None when no JS-render API was available (can't assess).
-    gaps = [c["gap_severity"] for r in (audit.get("js_results", {}) or {}).values()
-            if (c := (r or {}).get("comparison"))]
+    gaps = []
+    for r in (audit.get("js_results", {}) or {}).values():
+        c = (r or {}).get("comparison")
+        if isinstance(c, dict) and c.get("gap_severity") is not None:
+            gaps.append(c["gap_severity"])
     worst_gap = max(gaps) if gaps else None
     content_hidden = worst_gap is not None and worst_gap > 0.5
 
@@ -2057,7 +2066,9 @@ def build_channel_readiness(audit: dict) -> list:
         for bot in cfg["bots"]:
             robots_allowed = ai_results.get(bot, {}).get("allowed")  # True/False/None
             live = bot_crawl.get(bot, {})
-            live_status = live.get("status")
+            # run_live_bot_crawl stores the HTTP result as `status_code`;
+            # check_robots_crawlability's bot_crawl uses `status` — accept either.
+            live_status = live.get("status_code", live.get("status"))
             state = "ok"
             if robots_allowed is False:
                 explicitly_blocked.append(bot); state = "robots-blocked"
